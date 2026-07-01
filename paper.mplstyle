@@ -1,0 +1,52 @@
+############################
+# Typography
+############################
+
+font.family: sans-serif
+font.sans-serif: DejaVu Sans
+font.size: 20
+
+axes.labelsize: 24
+xtick.labelsize: 20
+ytick.labelsize: 20
+
+############################
+# Axes appearance
+############################
+
+axes.linewidth: 1.5
+axes.spines.top: False
+axes.spines.right: False
+
+############################
+# Ticks
+############################
+
+xtick.direction: out
+ytick.direction: out
+xtick.major.size: 6
+ytick.major.size: 6
+xtick.major.width: 1.2
+ytick.major.width: 1.2
+
+############################
+# Lines & markers
+############################
+
+lines.linewidth: 2.2
+lines.markersize: 8
+
+############################
+# Figure
+############################
+
+figure.figsize: 6, 6
+figure.dpi: 200
+savefig.dpi: 200
+savefig.bbox: tight
+
+############################
+# Grid (optional, subtle)
+############################
+
+axes.grid: False
