@@ -9,7 +9,7 @@ from matplotlib.collections import LineCollection
 from matplotlib import colors as mcolors
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LinearRegression, ElasticNet
+from sklearn.linear_model import HuberRegressor, LinearRegression, ElasticNet
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.metrics import roc_auc_score
 from scipy.stats import ks_2samp, wasserstein_distance
@@ -106,8 +106,95 @@ def inference_with_trials(dmm, data_set, cont_set, n_trials, device, chunk_size=
         torch.cuda.empty_cache()
     z_mean_trasp = np.transpose(z_mean_accum, (1, 0, 2))
     return z_mean_trasp
+
+
+def simple_RT_estimator(comm_dict, diff_dict):
+    tau = comm_dict["tau"]
+    
+    data = diff_dict["data"]
+    alpha = diff_dict["alpha"]
+    start_estimate = diff_dict["start_estimate"]
+    reg_type = diff_dict["reg_type"]
+    max_dist = diff_dict["max_dist"]
+    
+    set_cn = data["set_cn_ordRT"]
+    RT_cn = data["RT_cn_ordRT"]
+    
+    RT_cn = RT_cn//tau
+    print(RT_cn.min())
+    MUA_sum = set_cn.sum(axis=2)
+    RT_estimate = np.argmax(MUA_sum[:, (56+start_estimate)//tau:], axis=1)
+    RT_estimate = RT_estimate + start_estimate//tau
+    
+    mask = (RT_estimate > RT_cn.min()) & (RT_estimate < RT_cn.max())
+    RT_estimate = RT_estimate[mask]
+    RT_cn = RT_cn[mask]
+    
+    from sklearn.linear_model import HuberRegressor
+    from sklearn.linear_model import QuantileRegressor
+
+    if reg_type == "MAE":
+        reg = QuantileRegressor(
+            quantile=0.5,
+            alpha=0,
+            solver='highs'
+        ).fit(RT_cn.reshape(-1, 1), RT_estimate)
+    elif reg_type == "MSE":
+        reg = LinearRegression().fit(RT_cn.reshape(-1, 1), RT_estimate)
+
+    direction = reg.coef_
+    intercept = reg.intercept_
         
+    plt.scatter(RT_cn, RT_estimate, alpha=alpha)
+    plt.plot(RT_cn, reg.predict(RT_cn.reshape(-1, 1)), color='red', lw=2, label=f'Fit: y={direction[0]:.2f}x+{intercept:.2f}')
+    plt.xlabel('True RT')
+    plt.ylabel('Predicted RT')
+    plt.legend()
+    plt.show()
         
+    if reg_type == "MAE":
+        q = np.median(RT_estimate - RT_cn)
+    elif reg_type == "MSE":
+        q = (RT_estimate - RT_cn).mean()
+    plt.scatter(RT_cn, RT_estimate, alpha=alpha)
+    plt.plot(RT_cn, RT_cn + q, color='red', lw=2, label=f'Fit: y=x+{q:.2f}')
+    plt.xlabel('True RT')
+    plt.ylabel('Predicted RT')
+    plt.legend()
+    plt.show()
+    
+    np.save(comm_dict["saved_path"] / "RT_offset.npy", q)
+    
+    # True points
+    # true_points = np.column_stack((RT_cn, RT_estimate))
+    # # Predicted points
+    # pred_points = np.column_stack((RT_cn, RT_cn + intercept))
+    # # Euclidean distance between corresponding points
+    # errors = np.linalg.norm(true_points - pred_points, axis=1)
+
+    # # Plot histogram
+    # plt.figure(figsize=(8, 5))
+    # plt.hist(errors, bins=30, edgecolor='black', alpha=0.7)
+
+    # plt.xlabel('Euclidean distance')
+    # plt.ylabel('Number of points')
+    # plt.title('Distribution of prediction errors')
+    # plt.grid(axis='y', alpha=0.3)
+    # plt.show()
+    
+    # mask_err = (errors < max_dist)
+    # RT_cn = RT_cn[mask_err]
+    # RT_estimate = RT_estimate[mask_err]
+    # q = np.median(RT_estimate- RT_cn)
+    # plt.scatter(RT_cn, RT_estimate, alpha=alpha)
+    # plt.plot(RT_cn, RT_cn + q, color='red', lw=2, label=f'Fit: y=x+{q:.2f}')
+    # plt.xlabel('True RT')
+    # plt.ylabel('Predicted RT')
+    # plt.legend()
+    # plt.show()
+    # print(q)
+    
+    
 def RT_pred_performance(comm_dict, diff_dict):
     
     RT_detector = comm_dict["RT_detector"]
@@ -320,7 +407,6 @@ def correlation_vs_gentime(comm_dict, diff_dict):
     tau = comm_dict["tau"]
     saved_path = comm_dict["saved_path"]
     
-    data = diff_dict["data"]
     sim_start_array = diff_dict["sim_start_array"]
     compute = diff_dict["compute"]
     color_corr = diff_dict["color_corr"]
@@ -331,8 +417,6 @@ def correlation_vs_gentime(comm_dict, diff_dict):
     h_hist = diff_dict["h_hist"]
     y_lim = diff_dict["y_lim"]
     figsize =  diff_dict["figsize"]
-    
-    RT_cn = data["RT_cn_ordRT"]
     
     if compute:
         correlations = np.zeros(len(sim_start_array))
@@ -354,18 +438,21 @@ def correlation_vs_gentime(comm_dict, diff_dict):
             sim_start_array_new = loaded_file["sim_start_array"]
     
     fig, ax1 = plt.subplots(figsize=figsize)
-
-    ax1.scatter(sim_start_array_new, correlations_new, color=color_corr, edgecolors=color_edge)
-    ax1.axvline(56*5, color="black", linestyle="--")
+    
+    sim_start_array_GO = sim_start_array_new - 56*tau
+    ax1.scatter(sim_start_array_GO, correlations_new, color=color_corr, edgecolors=color_edge)
+    ax1.axvline(0, color="black", linestyle="--")
     ax1.set_ylim((0, y_lim))
     ax1.set_xlabel("Simulation start ($ms$)")
-    ax1.set_xticks([400, 800]) 
-    ax1.set_xticklabels([400, 800])
+    ax1.set_xticks([0, 500]) 
+    ax1.set_xticklabels([0, 500])
     ax1.set_ylabel("Correlation")
     ax1.set_yticks([0, 0.5, 1])
     ax1.set_yticklabels([0, 0.5, 1])
 
-    RT_true = (56 + RT_cn) * 5
+    # RT_true = RT_cn * 5
+    with np.load(saved_path / f"RT_distribution_1.npz", allow_pickle=True) as loaded_file:
+        RT_true = loaded_file["RT_true"]
     min_value = RT_true.min() - 50
     max_value = RT_true.max() + 50
     bin_edges = np.linspace(min_value, max_value, num_bins + 1)
@@ -379,7 +466,7 @@ def correlation_vs_gentime(comm_dict, diff_dict):
     plt.savefig(fig_file)
     plt.show()
         
-    dict_corr = {a: (b, c) for a, b, c in zip(sim_start_array_new, correlations_new, corr_stds_new)}
+    dict_corr = {a: (b, c) for a, b, c in zip(sim_start_array_GO, correlations_new, corr_stds_new)}
     print(f"RT correlations at the GO cue: {correlations_new[56//tau]}")
     
     return dict_corr
@@ -395,46 +482,54 @@ def DMM_EV(comm_dict, diff_dict):
     y_lims = diff_dict["y_lims"]
     delta_y = diff_dict["delta_y"]
     alpha = diff_dict["alpha"]
+    compute = diff_dict["compute"]
     model_dir = diff_dict["model_dir"]
     
     model_path = saved_path.parent / model_dir
-    with np.load(model_path / "data_split.npz", allow_pickle=True) as loaded_file:
-            test_set = loaded_file["test_set"]
-            test_direction = loaded_file["test_direction"]
-            test_SSD = loaded_file["test_SSD"]
+    
+    if compute:
+        with np.load(model_path / "data_split.npz", allow_pickle=True) as loaded_file:
+                test_set = loaded_file["test_set"]
+                test_direction = loaded_file["test_direction"]
+                test_SSD = loaded_file["test_SSD"]
             
-    params = {
-        "cfg": model_path / "config.ini",
-        "device": device,
-        "saved_dir": model_path
-    }
+        params = {
+            "cfg": model_path / "config.ini",
+            "device": device,
+            "saved_dir": model_path
+        }
     
-    from dmm.learning_algo_dir import LearningAlgorithm_dir
+        from dmm.learning_algo_dir import LearningAlgorithm_dir
     
-    weights_dir = "DKF_simple_final_epoch149.pt"
-    learning_algo = LearningAlgorithm_dir(params=params)
-    dmm = learning_algo.model
-    dmm.load_state_dict(torch.load(model_path / weights_dir, map_location=device))
-    dmm.eval()
-    z_dim = dmm.z_dim
+        weights_dir = "DKF_simple_final_epoch149.pt"
+        learning_algo = LearningAlgorithm_dir(params=params)
+        dmm = learning_algo.model
+        dmm.load_state_dict(torch.load(model_path / weights_dir, map_location=device))
+        dmm.eval()
+        z_dim = dmm.z_dim
  
-    cont_test = one_hot_cont(test_SSD, test_direction, dmm.tau)
-    test_data = torch.from_numpy(test_set).float().to(device).permute(1, 0, 2)
-    cont_test = torch.from_numpy(cont_test).float().to(device).permute(1, 0, 2)
-    z, _, _ = dmm.inference(test_data, cont_test)
-    z = z.cpu().detach().numpy().reshape(-1, z_dim) 
+        cont_test = one_hot_cont(test_SSD, test_direction, dmm.tau)
+        test_data = torch.from_numpy(test_set).float().to(device).permute(1, 0, 2)
+        cont_test = torch.from_numpy(cont_test).float().to(device).permute(1, 0, 2)
+        z, _, _ = dmm.inference(test_data, cont_test)
+        z = z.cpu().detach().numpy().reshape(-1, z_dim) 
     
-    scaler = StandardScaler()
-    z_scaled = scaler.fit_transform(z)
+        scaler = StandardScaler()
+        z_scaled = scaler.fit_transform(z)
 
-    # Applica PCA con n_components=3
-    pca = PCA(n_components=z_dim)
-    pca.fit(z_scaled)
+        # Applica PCA con n_components=3
+        pca = PCA(n_components=z_dim)
+        pca.fit(z_scaled)
 
-    # Ottieni l'explained variance per ciascuna componente
-    explained_variance = pca.explained_variance_ratio_
-    z_vec = (np.arange(z_dim) + 1)/(z_dim+1)
-    
+        # Ottieni l'explained variance per ciascuna componente
+        explained_variance = pca.explained_variance_ratio_
+        z_vec = (np.arange(z_dim) + 1)/(z_dim+1)
+        np.savez(model_path / "DMM_EV.npz", z_vec=z_vec, explained_variance=explained_variance)
+    else:
+        with np.load(model_path / "DMM_EV.npz", allow_pickle=True) as loaded_file:
+            z_vec = loaded_file["z_vec"]
+            explained_variance = loaded_file["explained_variance"]
+
     f, ax = plt.subplots()
     
     ax.plot(z_vec, explained_variance, "--", color=color, alpha=alpha)
@@ -466,8 +561,11 @@ def DMM_vs_dim(comm_dict, diff_dict):
     y_ticks = diff_dict["y_ticks"]
     colors = diff_dict["colors"]
     model_dirs = diff_dict["model_dirs"]
+    inset_font = diff_dict["inset_font"]
+    inset_dim = diff_dict["inset_dim"]
     
     data = []
+    inset_data = []
     for i in range(len(model_dirs)):
         
         model_path = comm_dict["saved_path"].parent / model_dirs[i]
@@ -479,13 +577,20 @@ def DMM_vs_dim(comm_dict, diff_dict):
         dir_filename = "Non_Markov_dict_z"
         checkpoint_NonMarkov = torch.load(model_path / dir_filename, weights_only=False, map_location=device)
         
+        dir_filename = "Markov_dict_z"
+        checkpoint_Markov = torch.load(model_path / dir_filename, weights_only=False, map_location=device)
+        
         dir_filename = "MSE"
         checkpoint_MSE = torch.load(model_path / dir_filename, weights_only=False, map_location=device)
-        MSE_rec = checkpoint_MSE["MSE_DMM"]
+        MSE_rec = checkpoint_MSE["MSE_DMM_test"]
     
         NMSE_NonMarkov = checkpoint_NonMarkov["MSE_pc"]
+        NMSE_Markov = checkpoint_Markov["MSE_pc"]
         r2_NonMarkov = 1 - NMSE_NonMarkov
+        r2_Markov = 1 - NMSE_Markov
         r2_rec = 1 - MSE_rec
+        
+        inset_data.append(r2_Markov)
         
         data.append([r2_rec, r2_NonMarkov, accuracy_dir])
  
@@ -512,6 +617,24 @@ def DMM_vs_dim(comm_dict, diff_dict):
             else: 
                 delta_y = 0.02
             ax.text(xi, yi + (delta_y*y_ticks[i][1]), f"{yi:.2f}", ha='center')
+            
+        if i==1:
+            # --- Inset axes inside ax ---
+            axins = ax.inset_axes(inset_dim)  # [x0, y0, width, height] in Axes fraction
+
+            axins.bar(x, inset_data, color=colors, width=width)
+            axins.set_xlim((0, 1))
+            axins.set_xticks(x)
+            axins.set_xticklabels(["D=2", "D=3", "D=4"])
+            axins.set_ylabel("$R^2_D$", fontsize=inset_font)
+            axins.set_ylim((0, 1.2))
+            axins.set_yticks((0, 1))
+            axins.set_yticklabels((0, 1))
+            axins.tick_params(labelsize=inset_font)
+            
+            # mostro anche il numero sopra la barra
+            for xi, yi in zip(x, inset_data):
+                axins.text(xi, yi + (0.05*y_ticks[i][1]), f"{yi:.2f}", ha='center', fontsize=inset_font)
         
         fig_file = saved_path / f'DMM_vs_dim_{plot_label[i]}.png'
         plt.savefig(fig_file)
@@ -559,8 +682,8 @@ def PCA_vs_DMM(comm_dict, diff_dict):
     
     dir_filename = "MSE"
     checkpoint_MSE = torch.load(saved_path / dir_filename, weights_only=False, map_location=device)
-    MSE_rec_DMM = checkpoint_MSE["MSE_DMM"]
-    MSE_rec_PCA = checkpoint_MSE["MSE_PCA"]
+    MSE_rec_DMM = checkpoint_MSE["MSE_DMM_test"]
+    MSE_rec_PCA = checkpoint_MSE["MSE_PCA_test"]
     
     r2_Markov_PCA = 1-NMSE_Markov_PCA
     r2_Markov_DMM = 1-NMSE_Markov_DMM
@@ -653,6 +776,7 @@ def random_latent_cn_traj(comm_dict, data, n_trials=1):
 def latent_traj_example(comm_dict, diff_dict):
     
     saved_path = comm_dict["saved_path"]
+    dmm = comm_dict["dmm"]
     
     data = diff_dict["data"]
     color_line = diff_dict["color_line"]
@@ -667,14 +791,61 @@ def latent_traj_example(comm_dict, diff_dict):
     lw_axis = diff_dict["lw_axis"]
     lw_arrows = diff_dict["lw_arrows"]
     lw_line = diff_dict["lw_line"]
+    compute = diff_dict["compute"]
     
-    z_trial, RT, q = random_latent_cn_traj(comm_dict, data,)
+    if compute:
+        z_trial, _, q = random_latent_cn_traj(comm_dict, data)
+        np.savez(saved_path / "latent_traj_example.npz", z_trial=z_trial, q=q)
+    else:
+        with np.load(saved_path / "latent_traj_example.npz") as loaded_file:
+            z_trial = loaded_file["z_trial"]
+            q = loaded_file["q"]
 
     print(f"traj n.{q}")
         
     x_true_story = z_trial[:, 0]
     y_true_story = z_trial[:, 1]
     z_true_story = z_trial[:, 2]
+    
+    x_mean, x_logvar = dmm.generation_x(torch.from_numpy(z_trial).unsqueeze(1))
+    x_decoded = dmm.reparameterization(x_mean, x_logvar)
+    x_decoded = x_decoded.squeeze().cpu().detach().numpy()
+    MUA_square = channel2grid(x_decoded)
+    vmax = 3
+    
+    f, ax = plt.subplots(figsize=(6, 6))
+        
+    stim_plot = ax.imshow(MUA_square[80], 
+                            aspect='equal',
+                            cmap="magma",
+                            interpolation='nearest',
+                            vmin=-vmax, vmax=vmax)
+    ax.plot(0, 0, 'x', color="r", markersize=8, markeredgewidth=4)  # Alto a sinistra
+    ax.plot(9, 0, 'x', color="r", markersize=8, markeredgewidth=4)  # Alto a destra
+    ax.plot(0, 9, 'x', color="r", markersize=8, markeredgewidth=4)  # Basso a sinistra
+    ax.plot(9, 9, 'x', color="r", markersize=8, markeredgewidth=4)  # Basso a destra
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.grid(True, which='major', color='w', alpha=0.2)
+    cbar = plt.colorbar(stim_plot, ax=ax)
+    cbar.set_ticks([-vmax, 0, vmax])
+        
+    f, ax = plt.subplots(figsize=(6, 6))
+            
+    stim_plot = ax.imshow(MUA_square[100], 
+                            aspect='equal',
+                            cmap="magma",
+                            interpolation='nearest',
+                            vmin=-vmax, vmax=vmax)
+    ax.plot(0, 0, 'x', color="r", markersize=8, markeredgewidth=4)  # Alto a sinistra
+    ax.plot(9, 0, 'x', color="r", markersize=8, markeredgewidth=4)  # Alto a destra
+    ax.plot(0, 9, 'x', color="r", markersize=8, markeredgewidth=4)  # Basso a sinistra
+    ax.plot(9, 9, 'x', color="r", markersize=8, markeredgewidth=4)  # Basso a destra
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.grid(True, which='major', color='w', alpha=0.2)
+    cbar = plt.colorbar(stim_plot, ax=ax)
+    cbar.set_ticks([-vmax, 0, vmax])
     
     # -------------------------
     # Create figure
@@ -821,6 +992,12 @@ def plot_cycle_shift_short(comm_dict, diff_dict):
     
     text = "" if stimolate else "_onech"
     text_mean = "_mean" if mean else ""
+    file_path = saved_path / f'long_trials_{l}{text}{text_mean}.pt'
+        
+    torch.save({
+        'trial_true': trial_true,
+        'cont_RT': cont_RTlong,
+    }, file_path)
     
     if compute:
         # --- STIMA DIREZIONE ---
@@ -924,18 +1101,18 @@ def plot_cycle_shift_short(comm_dict, diff_dict):
                 stim_effect = loaded_file["stim_effect"]
                 stim_effect_min = loaded_file["stim_effect_min"]
                 diff_stim = stim_effect - stim_effect_min
-            
+        print(trial_stim.shape)
         trial_modified = torch.from_numpy(trial_stim).float().to(device)
     
-    if stimolate:  
+    if stimolate:
         dx_array = channel2grid(dx_array)
-        last_stim = dx_array[stimulation_steps].copy()
+        last_stim = dx_array[-1].copy()
         last_stim[last_stim < thr] = 0
     else:
         mean_stim_effect = diff_stim.mean(1)
         last_stim = channel2grid(mean_stim_effect)
     
-    make_RThist(comm_dict, diff_dict, last_stim, trial_modified, trial_true, cont_RTlong, l, 'shorter')
+    make_RThist(comm_dict, diff_dict, last_stim, trial_modified, file_path, 'shorter')
     
     
 def plot_cycle_shift_long(comm_dict, diff_dict):
@@ -992,6 +1169,13 @@ def plot_cycle_shift_long(comm_dict, diff_dict):
     
     start_sim = step//tau + 1 - stimulation_steps
     text = "" if stimolate else "_onech"
+    text_mean = "_mean" if mean else ""
+    file_path = saved_path / f'long_trials_{l}{text}{text_mean}.pt'
+    
+    torch.save({
+        'trial_true': trial_true,
+        'cont_RT': cont_RTshort,
+    }, file_path)
     
     if compute:
         # --- STIMA DIREZIONE ---
@@ -1063,7 +1247,6 @@ def plot_cycle_shift_long(comm_dict, diff_dict):
                 trial_modified[start_sim + t + 1] += residual[start_sim + t + 1]
             stim_effect[t] = trial_modified[start_sim + t + 1] - trial_true[start_sim + t + 1]
             
-            
             trial_cut_min = trial_modified_min.clone()
             # z_t = enc(x+dx)
             z_modified, _, _ = dmm.inference(trial_cut_min[:(start_sim + t + 1)], cont_RTshort[:(start_sim + t + 1)])
@@ -1087,9 +1270,9 @@ def plot_cycle_shift_long(comm_dict, diff_dict):
         stim_effect_min = stim_effect_min.cpu().detach().numpy()
         trial_stim = trial_modified.cpu().detach().numpy()
     
-        np.savez(saved_path / f"longer_RT_{l}{text}.npz", trial_stim = trial_stim, stim_effect_min=stim_effect_min, stim_effect = stim_effect, dx_array = dx_array)
+        np.savez(saved_path / f"longer_RT_{l}{text}{text_mean}.npz", trial_stim = trial_stim, stim_effect_min=stim_effect_min, stim_effect = stim_effect, dx_array = dx_array)
     else:
-        with np.load(saved_path / f"longer_RT_{l}{text}.npz") as loaded_file:
+        with np.load(saved_path / f"longer_RT_{l}{text}{text_mean}.npz") as loaded_file:
             trial_stim = loaded_file["trial_stim"]
             dx_array = loaded_file["dx_array"]
             if not stimolate:
@@ -1101,13 +1284,13 @@ def plot_cycle_shift_long(comm_dict, diff_dict):
     
     if stimolate:  
         dx_array = channel2grid(dx_array)
-        last_stim = dx_array[stimulation_steps].copy()
+        last_stim = dx_array[-1].copy()
         last_stim[last_stim < thr] = 0
     else:
         mean_stim_effect = diff_stim.mean(1)
         last_stim = channel2grid(mean_stim_effect)
     
-    make_RThist(comm_dict, diff_dict, last_stim, trial_modified, trial_true, cont_RTshort, l, 'longer')
+    make_RThist(comm_dict, diff_dict, last_stim, trial_modified, file_path, 'longer')
 
 
 def compute_dx_for_last_step_ElasticNet(dmm, x_seq, c_seq, delta_z, alpha_l1=1e-3, l1_ratio=1, n_iter=1):
@@ -1177,12 +1360,13 @@ def compute_dx_for_last_step_ElasticNet(dmm, x_seq, c_seq, delta_z, alpha_l1=1e-
     return x_seq, dx_last
     
 
-def make_RThist(comm_dict, diff_dict, last_stim, trial_modified, trial_true, cont_RTlong, l, text, RT_true=None):
+def make_RThist(comm_dict, diff_dict, last_stim, trial_modified, file_path, text, RT_true=None):
     
     dmm = comm_dict["dmm"]
     tau = comm_dict["tau"]
     RT_detector = comm_dict["RT_detector"]
     saved_path = comm_dict["saved_path"]
+    device = comm_dict["device"]
     
     alpha = diff_dict["alpha"]
     step = diff_dict["step"]
@@ -1195,27 +1379,40 @@ def make_RThist(comm_dict, diff_dict, last_stim, trial_modified, trial_true, con
     markeredgewidth = diff_dict["markeredgewidth"]
     color_edge = diff_dict["color_edge"]
     cmap_stim = diff_dict["cmap_stim"]
+    mean = diff_dict["mean"]
+    stimolate = diff_dict["stimolate"]
+    l = diff_dict["l"]
+    
+    text = "" if stimolate else "_onech"
+    # text_mean = "_mean" if mean else ""
         
     steps = 256//tau
     teacher = step//tau + 1
+                                    
+    data = torch.load(file_path, 
+                      map_location=device,
+                      weights_only=True)
+
+    trial_true = data['trial_true']
+    cont_RT = data['cont_RT']
                                                           
-    z_generated, _, _ = dmm.inference(trial_true[:teacher], cont_RTlong[:teacher])
-    z_modified, _, _ = dmm.inference(trial_modified, cont_RTlong[:teacher])
+    z_generated, _, _ = dmm.inference(trial_true[:teacher], cont_RT[:teacher])
+    z_modified, _, _ = dmm.inference(trial_modified, cont_RT[:teacher])
 
     alone = steps - teacher
     
     for cycle_step in range(alone):
         
-        z_mean_gen, z_cov_gen = dmm.generation_z(z_modified[-1].unsqueeze(0), cont_RTlong[teacher+cycle_step].unsqueeze(0))
+        z_mean_gen, z_cov_gen = dmm.generation_z(z_modified[-1].unsqueeze(0), cont_RT[teacher+cycle_step].unsqueeze(0))
         z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
         z_modified = torch.cat((z_modified, z_gen), dim=0)
         
-        z_mean_gen, z_cov_gen = dmm.generation_z(z_generated[-1].unsqueeze(0), cont_RTlong[teacher+cycle_step].unsqueeze(0))
+        z_mean_gen, z_cov_gen = dmm.generation_z(z_generated[-1].unsqueeze(0), cont_RT[teacher+cycle_step].unsqueeze(0))
         z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
         z_generated = torch.cat((z_generated, z_gen), dim=0)
         
     RT_output = RT_detector(z_modified.permute(1, 0, 2))
-    RT_estimate = prob_to_RT(RT_output, tau)   
+    RT_estimate = prob_to_RT(RT_output, tau)
 
     RT_gen = RT_detector(z_generated.permute(1, 0, 2))
     RT_estimate_gen = prob_to_RT(RT_gen, tau)  
@@ -1298,8 +1495,8 @@ def change_trial_cs(comm_dict, diff_dict):
     z_lims = comm_dict["z_lims"]
     z_ticks = comm_dict["z_ticks"]
     saved_path = comm_dict["saved_path"]
+    t = comm_dict["t"]
     
-    data = diff_dict["data"]
     n_trials = diff_dict["n_trials"]
     SSD = diff_dict["SSD"]
     axis = diff_dict["axis"]
@@ -1309,34 +1506,40 @@ def change_trial_cs(comm_dict, diff_dict):
     cmap_go = diff_dict["cmap_go"]
     n_arrows_init = diff_dict["n_arrows_init"]
     color_stop = diff_dict["color_stop"]
+    compute = diff_dict["compute"]
     
-    set_cs = data["set_cs_ordSSD"]
-    cont_cs = data["cont_cs_ordSSD"]
-    SSD_cs = data["SSD_cs_ordSSD"]
-    steps = set_cs.shape[1]
-    t = np.linspace(0, 255, 256, dtype = int)
-    t = t[::tau]
+    steps = len(t)
     
-    f, ax = plt.subplots()
+    if compute:
+        data = diff_dict["data"]
+        set_cs = data["set_cs_ordSSD"]
+        cont_cs = data["cont_cs_ordSSD"]
+        SSD_cs = data["SSD_cs_ordSSD"]
     
-    trial = set_cs[SSD_cs==SSD]
-    cont_c = cont_cs[SSD_cs==SSD]
-    if trial.shape[0] == 0:
-        print(f"change the trial with SSD={SSD:d}")
-    elif trial.shape[0] != steps:
-        print("many trials")
-        trial = trial[0]
-        cont_c = cont_c[0]
+        trial = set_cs[SSD_cs==SSD]
+        cont_c = cont_cs[SSD_cs==SSD]
+        if trial.shape[0] == 0:
+            print(f"change the trial with SSD={SSD:d}")
+        elif trial.shape[0] != steps:
+            print("many trials")
+            trial = trial[0]
+            cont_c = cont_c[0]
+        else:
+            trial = trial.squeeze(0)
+            cont_c = cont_c.squeeze(0)
+        np.savez(saved_path / f"trial_cont_cs_{SSD:d}.npz", trial=trial, cont_c=cont_c)
     else:
-        trial = trial.squeeze(0)
-        cont_c = cont_c.squeeze(0)
-
+        with np.load(saved_path / f"trial_cont_cs_{SSD:d}.npz") as loaded_file:
+            trial = loaded_file["trial"]
+            cont_c = loaded_file["cont_c"]      
+            
     trial = torch.from_numpy(trial).float().to(device).unsqueeze(1).repeat(1, n_trials, 1)
     cont_c = torch.from_numpy(cont_c).float().to(device).unsqueeze(1).repeat(1, n_trials, 1)
     # generation
     z, _, _ = dmm.inference(trial, cont_c)
 
-    teacher = ((56+SSD)//tau) 
+    f, ax = plt.subplots()
+    teacher = ((56+SSD)//tau)
     alone = steps-teacher
     min_grad_mod = (alone*(1-min_grad))/steps
     z_teach = z[:teacher]
@@ -1399,7 +1602,6 @@ def plot_cs_ns(comm_dict, diff_dict):
     z_ticks = comm_dict["z_ticks"]
     saved_path = comm_dict["saved_path"]
     
-    data = diff_dict["data"]
     s = diff_dict["s"]
     s_pc = diff_dict["s_pc"]
     alpha = diff_dict["alpha"]
@@ -1424,26 +1626,37 @@ def plot_cs_ns(comm_dict, diff_dict):
     inset_font = diff_dict["inset_font"]
     x_min, x_max = diff_dict["xlims"]
     x_min_pc, x_max_pc = diff_dict["xlims_pc"]
+    compute = diff_dict["compute"]
     
-    SSD_ws = data["SSD_ws_ordRT"]
-    RT_ws = data["RT_ws_ordRT"]
-    SSD_cs = data["SSD_cs_ordSSD"]
-    set_cn = data["set_cn_ordRT"]
-    set_ws = data["set_ws_ordRT"]
-    set_cs = data["set_cs_ordSSD"]
-    
-    z_cn, z_ws, z_cs = infer_latent(dmm, data, device)
-    n_cn, n_ws, n_cs = z_cn.shape[1], z_ws.shape[1], z_cs.shape[1]
-    
+    if compute:
+        data = diff_dict["data"]
+        SSD_ws = data["SSD_ws_ordRT"]
+        SSD_cs = data["SSD_cs_ordSSD"]
+        
+        z_cn, z_ws, z_cs = infer_latent(dmm, data, device)
+        
+        np.savez(saved_path / f"latent_inferred.npz", z_cn=z_cn, z_ws=z_ws, z_cs=z_cs)
+        np.savez(saved_path / f"SSD.npz", SSD_cs=SSD_cs, SSD_ws=SSD_ws)    
+    else:
+        with np.load(saved_path / f"latent_inferred.npz") as loaded_file:
+            z_cn = loaded_file["z_cn"]
+            z_ws = loaded_file["z_ws"]
+            z_cs = loaded_file["z_cs"]
+            
+        with np.load(saved_path / f"SSD.npz") as loaded_file:
+            SSD_cs = loaded_file["SSD_cs"]
+            SSD_ws = loaded_file["SSD_ws"]
+            
+    # n_cn, n_ws, n_cs = z_cn.shape[1], z_ws.shape[1], z_cs.shape[1]
     f, ax = plt.subplots()
-    
+            
     q_ws = np.where(SSD_ws == SSD_late)[0]
     if q_ws.size == 0:
         print(f"change the trial with SSD={SSD_late:d}")
     elif q_ws.size > 1:
         q_ws = q_ws[0]
     trial_ws = z_ws[:, q_ws]
-    
+            
     q_cs = np.where(SSD_cs == SSD_early)[0]
     if q_cs.size == 0:
         print(f"change the trial with SSD={SSD_early:d}")
@@ -1451,7 +1664,6 @@ def plot_cs_ns(comm_dict, diff_dict):
         q_cs = q_cs[0]
     trial_cs = z_cs[:, q_cs]
 
-    
     ws_x = trial_ws[:, axis[0]]
     ws_y = trial_ws[:, axis[1]]
     
@@ -1496,17 +1708,6 @@ def plot_cs_ns(comm_dict, diff_dict):
     plt.savefig(fig_file)    
     
     #------------------ Discriminator line for z  -----------------
-    
-    z_cn, z_ws, z_cs = infer_latent(dmm, data, device, n_trials)
-    
-    if n_trials>1:
-        z_cn = z_cn.reshape(steps, n_cn, n_trials, z_dim)
-        z_cn = z_cn.mean(2)
-        z_ws = z_ws.reshape(steps, n_ws, n_trials, z_dim)
-        z_ws = z_ws.mean(2)
-        z_cs = z_cs.reshape(steps, n_cs, n_trials, z_dim)
-        z_cs = z_cs.mean(2)
-    
     z_cs_stop = z_cs[(SSD_cs+56)//tau, np.arange(z_cs.shape[1])]
     z_ws_stop = z_ws[(SSD_ws+56)//tau, np.arange(z_ws.shape[1])]
     
@@ -1571,19 +1772,30 @@ def plot_cs_ns(comm_dict, diff_dict):
     #------------ inset PCA plot ------------------
     
     axins = ax.inset_axes(inset_dim)
-    
-    with np.load(saved_path / "data_split.npz", allow_pickle=True) as loaded_file:
-        train_set = loaded_file["train_set"]
+    if compute:
+        set_cn = data["set_cn_ordRT"]
+        set_ws = data["set_ws_ordRT"]
+        set_cs = data["set_cs_ordSSD"]
+        
+        with np.load(saved_path / "data_split.npz", allow_pickle=True) as loaded_file:
+            train_set = loaded_file["train_set"]
             
-    n_train, steps, features = train_set.shape
-    X_train = train_set.reshape(-1, features)  # shape = (n_train * time_steps, 96)
+        n_train, steps, features = train_set.shape
+        X_train = train_set.reshape(-1, features)  # shape = (n_train * time_steps, 96)
 
-    pca = PCA(n_components=z_dim)
-    pca.fit(X_train)  # fit + transform sul train 
+        pca = PCA(n_components=z_dim)
+        pca.fit(X_train)  # fit + transform sul train 
     
-    pc_cs = pca.transform(set_cs.reshape(-1, features)).reshape(-1, steps, z_dim).transpose(1, 0, 2)
-    pc_ws = pca.transform(set_ws.reshape(-1, features)).reshape(-1, steps, z_dim).transpose(1, 0, 2)
-    
+        pc_cs = pca.transform(set_cs.reshape(-1, features)).reshape(-1, steps, z_dim).transpose(1, 0, 2)
+        pc_ws = pca.transform(set_ws.reshape(-1, features)).reshape(-1, steps, z_dim).transpose(1, 0, 2)
+        pc_cn = pca.transform(set_cn.reshape(-1, features)).reshape(-1, steps, z_dim).transpose(1, 0, 2)
+        
+        np.savez(saved_path / "pca_data.npz", pc_cs=pc_cs, pc_ws=pc_ws, pc_cn=pc_cn)
+    else:
+        with np.load(saved_path / "pca_data_cs_ws.npz") as loaded_file:
+            pc_cs = loaded_file["pc_cs"]
+            pc_ws = loaded_file["pc_ws"]
+            
     pc_cs_stop = pc_cs[(SSD_cs+56)//tau, np.arange(pc_cs.shape[1])]
     pc_ws_stop = pc_ws[(SSD_ws+56)//tau, np.arange(pc_ws.shape[1])]
     
@@ -1664,8 +1876,8 @@ def change_trial_ws(comm_dict, diff_dict):
     z_lims = comm_dict["z_lims"]
     z_ticks = comm_dict["z_ticks"]
     saved_path = comm_dict["saved_path"]
+    t = comm_dict["t"]
     
-    data = diff_dict["data"]
     n_trials = diff_dict["n_trials"]
     SSD = diff_dict["SSD"]
     axis = diff_dict["axis"]
@@ -1677,28 +1889,34 @@ def change_trial_ws(comm_dict, diff_dict):
     color_fstop = diff_dict["color_fstop"]
     color_stop = diff_dict["color_stop"]
     anticipation = diff_dict["anticipation"]
+    compute = diff_dict["compute"]
     
-    set_ws = data["set_ws_ordSSD"]
-    cont_ws = data["cont_ws_ordSSD"]
-    SSD_ws = data["SSD_ws_ordSSD"]
-    steps = set_ws.shape[1]
-    t = np.linspace(0, 255, 256, dtype = int)
-    t = t[::tau]
+    steps = len(t)
     
-    f, ax = plt.subplots()
+    if compute:
+        data = diff_dict["data"]
+        set_ws = data["set_ws_ordSSD"]
+        cont_ws = data["cont_ws_ordSSD"]
+        SSD_ws = data["SSD_ws_ordSSD"]
     
-    trial = set_ws[SSD_ws==SSD]
-    cont_c = cont_ws[SSD_ws==SSD]
-    if trial.shape[0] == 0:
-        print(f"change the trial with SSD={SSD:d}")
-    elif trial.shape[0] != 1:
-        print("many trials")
-        trial = trial[0]
-        cont_c = cont_c[0]
+        trial = set_ws[SSD_ws==SSD]
+        cont_c = cont_ws[SSD_ws==SSD]
+        if trial.shape[0] == 0:
+            print(f"change the trial with SSD={SSD:d}")
+        elif trial.shape[0] != 1:
+            print("many trials")
+            trial = trial[0]
+            cont_c = cont_c[0]
+        else:
+            trial = trial.squeeze(0)
+            cont_c = cont_c.squeeze(0)
+            
+        np.savez(saved_path / f"trial_cont_ws_{SSD:d}.npz", trial=trial, cont_c=cont_c)
     else:
-        trial = trial.squeeze(0)
-        cont_c = cont_c.squeeze(0)
-
+        with np.load(saved_path / f"trial_cont_ws_{SSD:d}.npz") as loaded_file:
+            trial = loaded_file["trial"]
+            cont_c = loaded_file["cont_c"]
+            
     trial = torch.from_numpy(trial).float().to(device).unsqueeze(1).repeat(1, n_trials, 1)
     cont_c = torch.from_numpy(cont_c).float().to(device).unsqueeze(1).repeat(1, n_trials, 1)
     
@@ -1707,6 +1925,8 @@ def change_trial_ws(comm_dict, diff_dict):
     
     # generation
     z, _, _ = dmm.inference(trial, cont_c)
+    
+    f, ax = plt.subplots()
 
     teacher = ((56+SSD)//tau) - anticipation//(5*tau)
     alone = steps-teacher
@@ -1775,8 +1995,8 @@ def change_trial_cn(comm_dict, diff_dict):
     RT_detector = comm_dict["RT_detector"]
     move_detector = comm_dict["move_detector"]
     saved_path = comm_dict["saved_path"]
+    t = comm_dict["t"]
     
-    data = diff_dict["data"]
     n_trials = diff_dict["n_trials"]
     stop_array = diff_dict["stop_array"]
     RT = diff_dict["RT"]
@@ -1792,26 +2012,34 @@ def change_trial_cn(comm_dict, diff_dict):
     alpha_line = diff_dict["alpha_line"]
     lw = diff_dict["lw"]
     xx, yy = diff_dict["line"]
+    compute = diff_dict["compute"]
     
-    set_cn = data["set_cn_ordRT"]
-    cont_cn = data["cont_cn_ordRT"]
-    RT_cn = data["RT_cn_ordRT"]
-    steps = set_cn.shape[1]
-    l = len(stop_array)
-    t = np.linspace(0, 255, 256, dtype = int)
-    t = t[::tau]
+    steps = len(t)
+    
+    if compute:
+        data = diff_dict["data"]
+        set_cn = data["set_cn_ordRT"]
+        cont_cn = data["cont_cn_ordRT"]
+        RT_cn = data["RT_cn_ordRT"]
         
-    trial = set_cn[RT_cn==RT]
-    cont_c = cont_cn[RT_cn==RT]
-    if trial.shape[0] == 0:
-        print(f"change the trial with RT={RT:d}")
-    elif trial.shape[0] != steps:
-        trial = trial[0]
-        cont_c = cont_c[0]
+        trial = set_cn[RT_cn==RT]
+        cont_c = cont_cn[RT_cn==RT]
+        if trial.shape[0] == 0:
+            print(f"change the trial with RT={RT:d}")
+        elif trial.shape[0] != steps:
+            trial = trial[0]
+            cont_c = cont_c[0]
+        else:
+            trial = trial.squeeze(0)
+            cont_c = cont_c.squeeze(0)
+        np.savez(saved_path / f"trial_cont_cn_{RT}.npz", trial=trial, cont_c=cont_c)
     else:
-        trial = trial.squeeze(0)
-        cont_c = cont_c.squeeze(0)
+        with np.load(saved_path / f"trial_cont_cn_{RT}.npz") as loaded_file:
+            trial = loaded_file["trial"]
+            cont_c = loaded_file["cont_c"]
 
+    steps = len(t)
+    l = len(stop_array)
     cont = torch.zeros((1, n_trials, 4)).to(device)
     cont[:, :, 3] = 1  # Stop context
 
@@ -1899,7 +2127,6 @@ def RTgen_vs_SSD(comm_dict, diff_dict):
     saved_path = comm_dict["saved_path"]
     with_Cornelio = comm_dict["with_Cornelio"]
     
-    data = diff_dict["data"]
     n_trials = diff_dict["n_trials"]
     x_ticks = diff_dict["x_ticks"]
     elinewidth = diff_dict["elinewidth"]
@@ -1918,30 +2145,37 @@ def RTgen_vs_SSD(comm_dict, diff_dict):
     y_ticks_inset = diff_dict["y_ticks_inset"]
     inset_font = diff_dict["inset_font"]
     inset_dim = diff_dict["inset_dim"]
+    ylims_2 = diff_dict["ylims_2"]
+    x_ticks_2 = diff_dict["x_ticks_2"]
+    y_ticks_2 = diff_dict["y_ticks_2"]
+    fix_seed = diff_dict["fix_seed"]
     
-    set_cn = data["set_cn_ordRT"]
-    cont_cn = data["cont_cn_ordRT"]
-    RT_cn = data["RT_cn_ordRT"]
-   
-    n, steps, _ = set_cn.shape
-    RT_time = RT_cn*5
-    n_batch = n_trials // chunk_size if (n_trials%chunk_size)==0 else (n_trials // chunk_size) + 1
-    text = "_sim" if simulate_go else ""  
-    
-    # Input per batch
-    test_data = torch.from_numpy(set_cn).float().to(device).permute(1, 0, 2).repeat_interleave(chunk_size, dim=1)
-    cont_data = torch.from_numpy(cont_cn).float().to(device).permute(1, 0, 2).repeat_interleave(chunk_size, dim=1)
-    
-    cont = torch.zeros((1, n*chunk_size, 4)).to(device)
-    cont[:, :, 3] = 1
+    text = "_sim" if simulate_go else "" 
+    fix_text = "fix" if fix_seed else ""
 
     if compute:
+        data = diff_dict["data"]
+        set_cn = data["set_cn_ordRT"]
+        cont_cn = data["cont_cn_ordRT"]
+        RT_cn = data["RT_cn_ordRT"]
+           
+        n, steps, _ = set_cn.shape
+        RT_time = RT_cn*5
+        n_batch = n_trials // chunk_size if (n_trials%chunk_size)==0 else (n_trials // chunk_size) + 1
+        text = "_sim" if simulate_go else ""  
+            
+        # Input per batch
+        test_data = torch.from_numpy(set_cn).float().to(device).permute(1, 0, 2).repeat_interleave(chunk_size, dim=1)
+        cont_data = torch.from_numpy(cont_cn).float().to(device).permute(1, 0, 2).repeat_interleave(chunk_size, dim=1)
+            
+        cont = torch.zeros((1, n*chunk_size, 4)).to(device)
+        cont[:, :, 3] = 1
         with torch.inference_mode():
             RT_pred_list = []
             RT_time_list = []
             pmove_list = []
             # 🔁 Ora ciclo esterno sul tempo t
-            for SSD in SSD_list:
+            for i, SSD in enumerate(SSD_list):
                 teacher = (SSD//5 + 56)//tau
                 alone = steps - teacher - 1
                 
@@ -1965,18 +2199,19 @@ def RTgen_vs_SSD(comm_dict, diff_dict):
                     z_tmp = z[:teacher+1]
                     mu_z = z_tmp.clone()
                     mu_go = z_tmp.clone()
+                    eps = torch.randn_like(z[teacher:])
                     for step in range(alone):
                         z_mean_gen, z_cov_gen = dmm.generation_z(mu_go[-1].unsqueeze(0), cont_c[teacher+step].unsqueeze(0))
-                        z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
+                        z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen, eps=eps[step].unsqueeze(0) if fix_seed else None)
                         mu_go = torch.cat((mu_go, z_gen), dim=0)
                         
-                    mu_go_list.append(mu_go.reshape(mu_go.shape[0], -1, chunk_size, z_dim))
+                    mu_go_list.append(mu_go.reshape(mu_go.shape[0], -1, chunk_size, z_dim)) # steps x n x batch x z_dim
                     
                     for step in range(alone):
                         z_mean_gen, z_cov_gen = dmm.generation_z(mu_z[-1].unsqueeze(0), cont)
-                        z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
+                        z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen, eps=eps[step].unsqueeze(0) if fix_seed else None)
                         mu_z = torch.cat((mu_z, z_gen), dim=0)
-                    mu_z = mu_z.permute(1, 0, 2)
+                    mu_z = mu_z.permute(1, 0, 2) # 
                         
                     # --- Move detector
                     move_logit = move_detector(mu_z)
@@ -1984,12 +2219,12 @@ def RTgen_vs_SSD(comm_dict, diff_dict):
                     move_pred = move_output.reshape(-1, chunk_size)   # n x batch 
                 
                     move_pred_t_list.append(move_pred)
-                    mu_z_list.append(mu_z.reshape(-1, chunk_size, mu_z.shape[1], z_dim))
+                    mu_z_list.append(mu_z.reshape(-1, chunk_size, mu_z.shape[1], z_dim))  # n x batch x steps x z_dim
 
                 # Concatena tutti i batch per questo tempo t
                 move_pred_t = np.concatenate(move_pred_t_list, axis=1)  # n x n_trials
-                mu_z_array = torch.cat(mu_z_list, dim=1)
-                mu_go_array = torch.cat(mu_go_list, dim=2)  # n x n_trials
+                mu_z_array = torch.cat(mu_z_list, dim=1)    # n x n_trials x steps x z_dim
+                mu_go_array = torch.cat(mu_go_list, dim=2)  # steps x n x n_trials x z_dim
                 
                 mu_mean_go = mu_go_array.mean(2)
                 RT_output = RT_detector(mu_mean_go.permute(1, 0, 2))
@@ -2001,8 +2236,37 @@ def RTgen_vs_SSD(comm_dict, diff_dict):
                 valid_rows = hist >= min_ns    # trial con numero di simulazioni ws sufficienti
             
                 mu_z_masked = mu_z_array[valid_rows]
+                mu_go_masked = mu_go_array[:, valid_rows]
                 mask_valid = mask_ns[valid_rows]
                 RT_cn_valid = RT_go[valid_rows] if simulate_go else RT_time[valid_rows] 
+                
+                if i==0:
+                    mu_stop_mean = mu_z_masked.mean(1).permute(1, 0, 2).cpu().detach().numpy()
+                    mu_go_mean = mu_go_masked.mean(2).cpu().detach().numpy()
+                    
+                    delta_stop = mu_stop_mean[1:] - mu_stop_mean[:-1]
+                    delta_stop_window = delta_stop[teacher:teacher+40]
+                    delta_go = mu_go_mean[1:] - mu_go_mean[:-1]
+                    delta_go_window = delta_go[teacher:teacher+40]
+
+                    # Prodotto scalare tra u e v sulle z componenti
+                    dot_uv = np.sum(delta_stop_window * delta_go_window, axis=-1)       # shape (t, n)
+                    # Norma quadrata di v
+                    norm_v_sq = np.sum(delta_go_window**2, axis=-1)     # shape (t, n)
+                    # d = (u · v) / ||v||²
+                    d = dot_uv / norm_v_sq                # shape (t, n)
+                    # Media su n
+                    d_mean = np.mean(d, axis=1)           # shape (t,)
+                    
+                    # Norme dei vettori u e v sulle z componenti
+                    norm_u = np.sqrt(np.sum(delta_stop_window**2, axis=-1))  # shape (t, n)
+                    norm_v = np.sqrt(np.sum(delta_go_window**2, axis=-1))    # shape (t, n)
+
+                    # Rapporto tra le norme
+                    prop = norm_u / norm_v  # shape (t, n)
+                    # Media su n
+                    prop_mean = np.mean(prop, axis=1)  # shape (t,)
+                    
                 
                 print(mu_z_masked.shape)
                 mask_valid = torch.from_numpy(mask_valid).float().to(device)
@@ -2029,12 +2293,15 @@ def RTgen_vs_SSD(comm_dict, diff_dict):
         RT_time_dict = {i: arr for i, arr in enumerate(RT_time_list)}
         pmove_dict = {i: arr for i, arr in enumerate(pmove_list)}
 
-        np.savez(saved_path / f"RTgen_vs_SSD{text}_{n_trials}.npz", RT_pred_dict=RT_pred_dict, RT_time_dict=RT_time_dict, pmove_dict=pmove_dict)
+        np.savez(saved_path / f"RTgen_vs_SSD{text}_{n_trials}_{fix_text}.npz", RT_pred_dict=RT_pred_dict, \
+                 RT_time_dict=RT_time_dict, pmove_dict=pmove_dict, d_mean=d_mean, prop_mean=prop_mean)
     else:
-        with np.load(saved_path / f"RTgen_vs_SSD{text}_{n_trials}.npz", allow_pickle=True) as loaded_file:
+        with np.load(saved_path / f"RTgen_vs_SSD{text}_{n_trials}_{fix_text}.npz", allow_pickle=True) as loaded_file:
             RT_pred_dict = loaded_file["RT_pred_dict"].item()
             RT_time_dict = loaded_file["RT_time_dict"].item()
             pmove_dict = loaded_file["pmove_dict"].item()
+            d_mean = loaded_file["d_mean"]
+            prop_mean = loaded_file["prop_mean"]
 
     # ------------------ diff RT vs SSD --------------------------
     
@@ -2058,12 +2325,29 @@ def RTgen_vs_SSD(comm_dict, diff_dict):
     ax.set_yticks(y_ticks)
     ax.set_yticklabels(y_ticks)
     
+    # fig1, ax1 = plt.subplots(figsize=figsize)
+    # ax1.plot(d_mean, color="black")
+    # ax1.set_xlabel(r"time after first $SSD (\mathrm{ms})$")
+    # ax1.set_ylabel("GO and stop velocity alignment")
+    
+    fig2, ax2 = plt.subplots(figsize=figsize)
+    ax2.plot(np.arange(len(prop_mean))*tau*5, prop_mean, color="black")
+    ax2.set_ylim(ylims_2)
+    ax2.set_xlabel(r"time after stop $(\mathrm{ms})$")
+    ax2.set_ylabel(r"$|v_{\mathrm{stop}}|/|v_{\mathrm{go}}|$")
+    ax2.set_xticks(x_ticks_2)
+    ax2.set_xticklabels(x_ticks_2)
+    ax2.set_yticks(y_ticks_2)
+    ax2.set_yticklabels(y_ticks_2)
+    
     if with_Cornelio:
-        with np.load(saved_path.parent / with_Cornelio / f"RTgen_vs_SSD{text}_{n_trials}.npz", allow_pickle=True) as loaded_file:
+        with np.load(saved_path.parent / with_Cornelio / f"RTgen_vs_SSD{text}_{n_trials}_{fix_text}.npz", allow_pickle=True) as loaded_file:
                 RT_pred_dict = loaded_file["RT_pred_dict"].item()
                 RT_time_dict = loaded_file["RT_time_dict"].item()
                 pmove_dict = loaded_file["pmove_dict"].item()
-                
+                d_mean = loaded_file["d_mean"]
+                prop_mean = loaded_file["prop_mean"]
+
         RT_diff_mean = []
         RT_diff_std = []
         for i in range(len(SSD_list)):
@@ -2084,10 +2368,31 @@ def RTgen_vs_SSD(comm_dict, diff_dict):
         axins.set_yticks(y_ticks_inset)
         axins.set_yticklabels(y_ticks_inset)
         axins.tick_params(labelsize=inset_font)
-    
+        
+        # axins1 = ax1.inset_axes(inset_dim)
+        # axins1.plot(d_mean, color="black")
+        
+        axins2 = ax2.inset_axes(inset_dim)
+        axins2.plot(np.arange(len(prop_mean))*tau*5, prop_mean, color="black")
+        axins2.set_ylim(ylims_2)
+        axins2.set_xticks(x_ticks_2)
+        axins2.set_xticklabels(x_ticks_2)
+        axins2.set_yticks(y_ticks_2)
+        axins2.set_yticklabels(y_ticks_2)
+        axins2.tick_params(labelsize=inset_font)
+        
     # ── Save ──────────────────────────────────────────────────────────────────────
-    fig_file = saved_path / f'RTgen_vs_SSD{text}.png'
-    plt.savefig(fig_file)
+    fig_file = saved_path / f'RTgen_vs_SSD{text}_{fix_text}.png'
+    # fig_file1 = saved_path / f'RTgen_vs_SSD{text}_{fix_text}_alignment.png'
+    fig_file2 = saved_path / f'RTgen_vs_SSD{text}_{fix_text}_magnitude.png'
+    fig.savefig(fig_file)
+    # fig1.savefig(fig_file1)
+    fig2.savefig(fig_file2)
+    
+    print("Figure 1 saved:", fig_file.resolve(), fig_file.exists())
+    # print("Figure 2 saved:", fig_file1.resolve(), fig_file1.exists())
+    print("Figure 3 saved:", fig_file2.resolve(), fig_file2.exists())
+
     plt.show()
     
     
@@ -2101,7 +2406,6 @@ def early_SSRT(comm_dict, diff_dict):
     saved_path = comm_dict["saved_path"]
     with_Cornelio = comm_dict["with_Cornelio"]
     
-    data = diff_dict["data"]
     n_trials = diff_dict["n_trials"]
     simuldistr = diff_dict["simuldistr"]
     color_Piero = diff_dict["color_Piero"]
@@ -2118,24 +2422,23 @@ def early_SSRT(comm_dict, diff_dict):
     compute = diff_dict["compute"]
     SSD_short_list = diff_dict["SSD_short_list"]
     
-    set_cn = data["set_cn_ordRT"]
-    cont_cn = data["cont_cn_ordRT"]
-    RT_cn = data["RT_cn_ordRT"]
-    
-    n, steps, _ = set_cn.shape
-    
     text = "_sim" if simuldistr else ""
     mean = "_mean" if mean_z else ""
-    n_batch = n*n_trials // chunk_size if (n*n_trials%chunk_size)==0 else (n*n_trials // chunk_size) + 1
-    
-    # Input per batch
-    test_data = torch.from_numpy(set_cn).float().to(device).permute(1, 0, 2).repeat_interleave(n_trials, dim=1)
-    cont_data = torch.from_numpy(cont_cn).float().to(device).permute(1, 0, 2).repeat_interleave(n_trials, dim=1)
-    
-    cont = torch.zeros((1, chunk_size, 4)).to(device)
-    cont[:, :, 3] = 1
     
     if compute:
+        data = diff_dict["data"]
+        set_cn = data["set_cn_ordRT"]
+        cont_cn = data["cont_cn_ordRT"]
+        
+        n, steps, _ = set_cn.shape
+        n_batch = n*n_trials // chunk_size if (n*n_trials%chunk_size)==0 else (n*n_trials // chunk_size) + 1
+            
+        # Input per batch
+        test_data = torch.from_numpy(set_cn).float().to(device).permute(1, 0, 2).repeat_interleave(n_trials, dim=1)
+        cont_data = torch.from_numpy(cont_cn).float().to(device).permute(1, 0, 2).repeat_interleave(n_trials, dim=1)
+            
+        cont = torch.zeros((1, chunk_size, 4)).to(device)
+        cont[:, :, 3] = 1
         RT_pred_list = []
         move_perc_list = []
         for i, SSD_short in enumerate(SSD_short_list):
@@ -2161,10 +2464,11 @@ def early_SSRT(comm_dict, diff_dict):
                 if simuldistr and i==0:
                     teacher = 56//tau
                     alone = steps-teacher
+                    eps = torch.randn_like(z_cn[teacher:])
                     z_teach = z_cn[:teacher]
                     for step in range(alone):
                         z_mean_gen, z_cov_gen = dmm.generation_z(z_teach[-1].unsqueeze(0), cont_c[56//tau+step].unsqueeze(0))
-                        z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
+                        z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen, eps=eps[step])
                         z_teach = torch.cat((z_teach, z_gen), dim=0)
 
                     RT_output = RT_detector(z_teach.permute(1, 0, 2))
@@ -2179,13 +2483,13 @@ def early_SSRT(comm_dict, diff_dict):
                 z_stop = z_cn[:56//tau]
                 for step in range(alone_go):
                     z_mean_gen, z_cov_gen = dmm.generation_z(z_stop[-1].unsqueeze(0), cont_c[56//tau+step].unsqueeze(0))
-                    z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
+                    z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen, eps=eps[step])
                     z_stop = torch.cat((z_stop, z_gen), dim=0)
 
                 alone_stop = steps - stop                          
                 for step in range(alone_stop):
                     z_mean_gen, z_cov_gen = dmm.generation_z(z_stop[-1].unsqueeze(0), cont[:, :interval])
-                    z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
+                    z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen, eps=eps[alone_go+step])
                     z_stop = torch.cat((z_stop, z_gen), dim=0) 
 
                 move_logit = move_detector(z_stop.permute(1, 0, 2))
@@ -2277,14 +2581,14 @@ def SSRT_plot(comm_dict, diff_dict):
     saved_path = comm_dict["saved_path"]
     with_Cornelio = comm_dict["with_Cornelio"]
     
-    data = diff_dict["data"]
+    corn_load = diff_dict["corn_load"]
     n_trials = diff_dict["n_trials"]
     elinewidth = diff_dict["elinewidth"]
     capsize = diff_dict["capsize"]
     ms = diff_dict["ms"]
     SSD_interval = diff_dict["SSD_interval"]
     RT_groups = diff_dict["RT_groups"]
-    move_frac = diff_dict["move_frac"]
+    # move_frac = diff_dict["move_frac"]
     compute = diff_dict["compute"]
     logit_move = diff_dict["logit_move"]
     cut_tail = diff_dict["cut_tail"]
@@ -2297,29 +2601,32 @@ def SSRT_plot(comm_dict, diff_dict):
     inset_font = diff_dict["inset_font"]
     figsize = diff_dict["figsize"]
     mean_z = diff_dict["mean_z"]
+    use_sim_RT = diff_dict["use_sim_RT"]
+    load = diff_dict["load"]
     
-    set_cn = data["set_cn_ordRT"]
-    cont_cn = data["cont_cn_ordRT"]
-    RT_cn = data["RT_cn_ordRT"]
-    
-    n, steps, features = set_cn.shape
-    RT_cn_step = (RT_cn+56)//tau
-    RT_time = RT_cn*5
-    
-    # Preallocazione risultati
-    t_start, t_end = SSD_interval
-    t_interval = t_end - t_start
-    n_batch = n_trials // chunk_size if (n_trials%chunk_size)==0 else (n_trials // chunk_size) + 1
-    
-    # Input per batch
-    test_data = torch.from_numpy(set_cn).float().to(device).permute(1, 0, 2).repeat_interleave(chunk_size, dim=1)
-    cont_data = torch.from_numpy(cont_cn).float().to(device).permute(1, 0, 2).repeat_interleave(chunk_size, dim=1)
-    
-    cont = torch.zeros((1, n*chunk_size, 4)).to(device)
-    cont[:, :, 3] = 1
+    text = "_sim" if use_sim_RT else ""
     
     if compute:
-
+        data = diff_dict["data"]
+        set_cn = data["set_cn_ordRT"]
+        cont_cn = data["cont_cn_ordRT"]
+        RT_cn = data["RT_cn_ordRT"]
+    
+        n, steps, features = set_cn.shape
+        RT_cn_step = (RT_cn+56)//tau
+        RT_time = RT_cn*5
+            
+        # Preallocazione risultati
+        t_start, t_end = SSD_interval
+        t_interval = t_end - t_start
+        n_batch = n_trials // chunk_size if (n_trials%chunk_size)==0 else (n_trials // chunk_size) + 1
+            
+        # Input per batch
+        test_data = torch.from_numpy(set_cn).float().to(device).permute(1, 0, 2).repeat_interleave(chunk_size, dim=1)
+        cont_data = torch.from_numpy(cont_cn).float().to(device).permute(1, 0, 2).repeat_interleave(chunk_size, dim=1)
+            
+        cont = torch.zeros((1, n*chunk_size, 4)).to(device)
+        cont[:, :, 3] = 1
         move_perc_list = []
         with torch.inference_mode():
             # 🔁 Ora ciclo esterno sul tempo t
@@ -2346,15 +2653,17 @@ def SSRT_plot(comm_dict, diff_dict):
                     # Teacher e z iniziale
                     z_gen = z[teacher, torch.arange(len(teacher), device=device)].unsqueeze(0)
                     z_tmp = z_gen.clone()
+                    # z_go = z_gen.clone()
 
                     # --- Generazione z_teach
                     z_teach_list = []
+                    # z_go_list = []
                     for _ in range(alone):
                         z_mean_gen, z_cov_gen = dmm.generation_z(z_tmp, cont)
                         z_tmp = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
                         z_teach_list.append(z_tmp)
                     z_teach = torch.cat(z_teach_list, dim=0)
-
+                    
                     # --- Ricostruzione mu_z
                     mu_z_list = []
                     for i in range(z_teach.shape[1]):
@@ -2362,7 +2671,7 @@ def SSRT_plot(comm_dict, diff_dict):
                         z_final_i = torch.cat((z[:(teacher[i] + 1), i], z_teach[:-diff, i]), dim=0)
                         mu_z_list.append(z_final_i)
                     mu_z = torch.stack(mu_z_list, dim=1)  # [T, n*chunk, latent_dim]
-
+                    
                     # --- Move detector
                     move_logit = move_detector(mu_z.permute(1, 0, 2))
                     if logit_move:
@@ -2372,14 +2681,14 @@ def SSRT_plot(comm_dict, diff_dict):
 
                     move_pred = move_output.reshape(-1, chunk_size)   # n x batch 
                     move_pred_t_list.append(move_pred)
-
+                    
                 # Concatena tutti i batch per questo tempo t
                 move_pred_t = np.concatenate(move_pred_t_list, axis=1)  # n x n_trials
                 move_perc_list.append(move_pred_t.mean(1))  # media su n_trial (asse 1)
-
+                
             # Stack finale su tutti i tempi
             move_perc = np.stack(move_perc_list, axis=1)  # (n, t_end - t_start)
-
+            
             # Pulizia NaN
             nan_mask = np.isnan(move_perc).any(axis=1)
             move_perc = move_perc[~nan_mask]
@@ -2390,22 +2699,8 @@ def SSRT_plot(comm_dict, diff_dict):
             
             mask = move_perc <= 0.5
             SSRT_critic = mask.argmax(axis=1)
-            critic_t = RT_cn_step - SSRT_critic 
 
-            test_cn = torch.from_numpy(set_cn).float().to(device).permute(1, 0, 2)
-            test_c = torch.from_numpy(cont_cn).float().to(device).permute(1, 0, 2)
-
-            z_test, _, _ = dmm.inference(test_cn, test_c)
-            z_critic = z_test[critic_t, torch.arange(set_cn.shape[0])]
-            z_critic = z_critic.cpu().detach().numpy()
-
-            cont = torch.zeros((1, n_trials, 4)).to(device)
-            cont[:, :, 3] = 1
-            RT_stop = np.zeros(len(SSRT_critic))
             RT_go = np.zeros(len(SSRT_critic))
-            z_mean_stop = np.zeros((len(SSRT_critic), steps, z_dim))
-            z_mean_go = np.zeros((len(SSRT_critic), steps, z_dim))
-            frac_realizations = np.zeros(len(SSRT_critic))
             for i in range(len(SSRT_critic)):
                 if i % 30==0:
                     print(f"{i}/{len(SSRT_critic)}")
@@ -2424,78 +2719,39 @@ def SSRT_plot(comm_dict, diff_dict):
                 z_gen = z[:teacher]
                 cont_go = cont_c[teacher].unsqueeze(0)
 
-                z_tmp_stop = z_gen.clone()
                 z_tmp_go = z_gen.clone()
 
                 # --- Generazione z_teach
                 alone = steps - teacher
                 for _ in range(alone):
-                    z_mean_gen, z_cov_gen = dmm.generation_z(z_tmp_stop[-1].unsqueeze(0), cont)
-                    z_rep_stop = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
-                    z_tmp_stop = torch.cat((z_tmp_stop, z_rep_stop), dim=0)
-
                     z_mean_gen, z_cov_gen = dmm.generation_z(z_tmp_go[-1].unsqueeze(0), cont_go)
                     z_rep_go = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
                     z_tmp_go = torch.cat((z_tmp_go, z_rep_go), dim=0)
 
-                z_tmp_stop = z_tmp_stop.permute(1, 0, 2)
                 z_tmp_go = z_tmp_go.permute(1, 0, 2)
 
-                # --- Move detector
-                move_logit = move_detector(z_tmp_stop)
-                if logit_move:
-                    move_output = torch.sigmoid(move_logit).cpu().detach().numpy()
-                else:
-                    move_output = binary_output(move_logit)
-
-                mask = move_output > move_frac
-                if not mask.any():
-                    continue
-                else:
-                    z_tmp_stop_masked=z_tmp_stop[mask]
-                    z_tmp_go_masked=z_tmp_go[mask]
-                    
-                    RT_prob_stop = RT_detector(z_tmp_stop_masked)
-                    RT_estimate_stop = prob_to_RT(RT_prob_stop, tau)  
-                    RT_gen_stop = (RT_estimate_stop*tau)*5
-
-                    RT_prob_go = RT_detector(z_tmp_go_masked)
-                    RT_estimate_go = prob_to_RT(RT_prob_go, tau)  
-                    RT_gen_go = (RT_estimate_go*tau)*5
-                    
-                    frac_realizations[i] = mask.sum()/n_trials 
-                    RT_stop[i] = RT_gen_stop.mean()
-                    RT_go[i] = RT_gen_go.mean()
-                    z_mean_stop[i] = z_tmp_stop_masked.cpu().detach().numpy().mean(0)
-                    z_mean_go[i] = z_tmp_go_masked.cpu().detach().numpy().mean(0)
-        np.savez(saved_path / f"SSRT_plot_{n_trials}.npz", move_perc=move_perc, RT_stop=RT_stop, RT_go=RT_go, RT_time=RT_time,
-                SSRT_critic=SSRT_critic, z_mean_stop=z_mean_stop, z_mean_go=z_mean_go, z_critic=z_critic, frac_realizations=frac_realizations)
+                RT_prob_go = RT_detector(z_tmp_go)  # z_tmp_go_masked
+                RT_estimate_go = prob_to_RT(RT_prob_go, tau)  
+                RT_gen_go = (RT_estimate_go*tau)*5
+                RT_go[i] = RT_gen_go.mean()
+                
+        np.savez(saved_path / f"SSRT_plot{text}_{n_trials}_{load}.npz", move_perc=move_perc, RT_go=RT_go, RT_time=RT_time, SSRT_critic=SSRT_critic) 
     else:
-        with np.load(saved_path / f"SSRT_plot_{n_trials}.npz", allow_pickle=True) as loaded_file:
+        with np.load(saved_path / f"SSRT_plot{text}_{n_trials}_{load}.npz", allow_pickle=True) as loaded_file:
             move_perc = loaded_file["move_perc"]
-            RT_stop = loaded_file["RT_stop"]
             RT_go = loaded_file["RT_go"]
-            RT_time = loaded_file["RT_time"]#
+            RT_time = loaded_file["RT_time"]
             SSRT_critic = loaded_file["SSRT_critic"]
-            z_mean_stop = loaded_file["z_mean_stop"]
-            z_mean_go = loaded_file["z_mean_go"]
-            z_critic = loaded_file["z_critic"]
-            frac_realizations = loaded_file["frac_realizations"]
-    
+            
     
     RT_time_masked = RT_time
     if cut_tail:
         cut = int(len(RT_time) * frac_tail)
         move_perc = move_perc[cut:-cut]
         SSRT_critic = SSRT_critic[cut:-cut]
-        RT_stop = RT_stop[cut:-cut]
         RT_go = RT_go[cut:-cut]
         RT_time_masked = RT_time_masked[cut:-cut]
-        z_mean_stop = z_mean_stop[cut:-cut]
-        z_mean_go = z_mean_go[cut:-cut]
-        z_critic = z_critic[cut:-cut]
-        frac_realizations = frac_realizations[cut:-cut]
-    
+        
     mask = SSRT_critic != 0
     print(f"Of the {len(mask)} trials of Monkey P kept, {len(mask)-mask.sum()} are removed as they result in SSRT=0")
     
@@ -2503,13 +2759,8 @@ def SSRT_plot(comm_dict, diff_dict):
         move_perc = move_perc[mask]
         RT_time_masked = RT_time_masked[mask]
         SSRT_critic = SSRT_critic[mask]
-        RT_stop = RT_stop[mask]
         RT_go = RT_go[mask]
-        z_mean_stop = z_mean_stop[mask]
-        z_mean_go = z_mean_go[mask]
-        z_critic = z_critic[mask]
-        frac_realizations = frac_realizations[mask]
-    
+        
     n = move_perc.shape[0]
 
     mean_move_perc = move_perc.mean(0)
@@ -2522,15 +2773,17 @@ def SSRT_plot(comm_dict, diff_dict):
     n_group = len(RT_time_masked) // RT_groups if (len(RT_time_masked)%RT_groups)==0 else (len(RT_time_masked) // RT_groups) + 1
     SSRT_trials = np.argmax(move_perc <= 0.5, axis=1)*tau*5
     print(f"L'SSRT medio è: {SSRT_trials.mean()}")
+    RT_for_plot = RT_go if use_sim_RT else RT_time_masked
     for k in range(RT_groups):
         start = k*n_group
         end = min(start + n_group, len(RT_time_masked) + 1)
         # calcolo SSRT per ogni trial, e poi ne prendo la media per ogni gruppo di trials
         SSRT_group = SSRT_trials[start:end]
         SSRT_mean = np.nanmean(SSRT_group)
+        print("start:", start, "end:", end)
         SSRT_std = SSRT_group.std()/math.sqrt(end-start)
         # calcolo l'RT medio di ogni gruppo di trials
-        RT_group = RT_time_masked[start:end]
+        RT_group = RT_for_plot[start:end]
         mean_RT_group = RT_group.mean()
         # calcolo la media del gruppo di trials, e ne calcolo l'SSRT
         move_group = move_perc[start:end]
@@ -2548,15 +2801,28 @@ def SSRT_plot(comm_dict, diff_dict):
     RT_array = np.array(RT_list)
     
     # --- STIMA DIREZIONE ---
-    reg_mean = LinearRegression().fit(RT_array[:, None], SSRT_mean_array)
-    pred_SSRT_mean = reg_mean.predict(RT_array[:, None])
+    # reg_mean = LinearRegression().fit(RT_array[:, None], SSRT_mean_array)
+    # pred_SSRT_mean = reg_mean.predict(RT_array[:, None])
+    
+    # print("Coefficiente di regressione (Piero):", reg_mean.coef_.item())
+    # print("Intercetta (Piero):", reg_mean.intercept_.item())
+    
+    import statsmodels.api as sm
+
+    X = sm.add_constant(RT_array)
+
+    reg_mean = sm.OLS(SSRT_mean_array, X).fit()
+    pred_SSRT_mean = reg_mean.predict(X)
+    print(reg_mean.summary())
     
     f, ax = plt.subplots(figsize=figsize)
     ax.errorbar(RT_array, SSRT_mean_array, yerr=SSRT_std_array, fmt='o', color=color_point, ecolor='black', 
                              elinewidth=elinewidth, linestyle='none',capsize=capsize, ms=ms)
+    # ax.plot(RT_array, pred_SSRT_mean, "--", color = color_line, 
+    #            label = f"linear fit: m={reg_mean.coef_.item():.2f}, q={reg_mean.intercept_.item():.2f}")
     ax.plot(RT_array, pred_SSRT_mean, "--", color = color_line, 
-               label = f"linear fit: m={reg_mean.coef_.item():.2f}, q={reg_mean.intercept_.item():.2f}")
-    
+                label = f"linear fit: m={reg_mean.params[1]:.2f}, q={reg_mean.params[0]:.2f}")
+    print(f"Slope SE: {reg_mean.bse[1]}")
     # Calcola i limiti comuni
     min_val_x = ax.get_xlim()[0]
     min_val_y = ax.get_ylim()[0]
@@ -2572,12 +2838,10 @@ def SSRT_plot(comm_dict, diff_dict):
     ax.set_xticklabels([int(((min_val_x + dx)//100 + 1)*100), int(((min_val_x + 2*dx)//100 + 1)*100)])
     ax.set_yticks([int(((min_val_y + dy)//10)*10), int(((min_val_y + 2*dy)//10 + 1)*10)])
     ax.set_yticklabels([int(((min_val_y + dy)//10)*10), int(((min_val_y + 2*dy)//10 + 1)*10)])
-
     
     if with_Cornelio:
-        with np.load(saved_path.parent / with_Cornelio / f"SSRT_plot_{n_trials}.npz", allow_pickle=True) as loaded_file:
+        with np.load(saved_path.parent / with_Cornelio / f"SSRT_plot{text}_{n_trials}_{corn_load}.npz", allow_pickle=True) as loaded_file:
                 move_perc_c = loaded_file["move_perc"]
-                RT_stop_c = loaded_file["RT_stop"]
                 RT_go_c = loaded_file["RT_go"]
                 RT_time_c = loaded_file["RT_time"]
                 SSRT_critic_c = loaded_file["SSRT_critic"]
@@ -2587,7 +2851,6 @@ def SSRT_plot(comm_dict, diff_dict):
             cut_c = int(len(RT_time_c) * frac_tail)
             move_perc_c = move_perc_c[cut_c:-cut_c]
             SSRT_critic_c = SSRT_critic_c[cut_c:-cut_c]
-            RT_stop_c = RT_stop_c[cut_c:-cut_c]
             RT_go_c = RT_go_c[cut_c:-cut_c]
             RT_time_masked_c = RT_time_masked_c[cut_c:-cut_c]
 
@@ -2598,7 +2861,6 @@ def SSRT_plot(comm_dict, diff_dict):
             move_perc_c = move_perc_c[mask_c]
             RT_time_masked_c = RT_time_masked_c[mask_c]
             SSRT_critic_c = SSRT_critic_c[mask_c]
-            RT_stop_c = RT_stop_c[mask_c]
             RT_go_c = RT_go_c[mask_c]
 
         SSRT_std_list_c = []
@@ -2607,6 +2869,7 @@ def SSRT_plot(comm_dict, diff_dict):
         RT_list_c = []
         n_group_c = len(RT_time_masked_c) // RT_groups if (len(RT_time_masked_c)%RT_groups)==0 else (len(RT_time_masked_c) // RT_groups) + 1
         SSRT_trials_c = np.argmax(move_perc_c <= 0.5, axis=1)*tau*5
+        RT_for_plot = RT_go_c if use_sim_RT else RT_time_masked
         for k in range(RT_groups):
             start = k*n_group_c
             end = min(start + n_group, len(RT_time_masked_c) + 1)
@@ -2615,7 +2878,7 @@ def SSRT_plot(comm_dict, diff_dict):
             SSRT_mean_c = np.nanmean(SSRT_group_c)
             SSRT_std_c = SSRT_group_c.std()/math.sqrt(end-start)
             # calcolo l'RT medio di ogni gruppo di trials
-            RT_group_c = RT_time_masked_c[start:end]
+            RT_group_c = RT_for_plot[start:end]
             mean_RT_group_c = RT_group_c.mean()
             # calcolo la media del gruppo di trials, e ne calcolo l'SSRT
             move_group_c = move_perc_c[start:end]
@@ -2632,9 +2895,18 @@ def SSRT_plot(comm_dict, diff_dict):
         RT_array_c = np.array(RT_list_c)
 
         # --- STIMA DIREZIONE ---
-        reg_mean_c = LinearRegression().fit(RT_array_c[:, None], SSRT_mean_array_c)
-        pred_SSRT_mean_c = reg_mean_c.predict(RT_array_c[:, None])
-    
+        # reg_mean_c = LinearRegression().fit(RT_array_c[:, None], SSRT_mean_array_c)
+        # pred_SSRT_mean_c = reg_mean_c.predict(RT_array_c[:, None])
+        
+        # print("Coefficiente di regressione (Cornelio):", reg_mean_c.coef_.item())
+        # print("Intercetta (Cornelio):", reg_mean_c.intercept_.item())
+        
+        X = sm.add_constant(RT_array_c)
+        
+        reg_mean_c = sm.OLS(SSRT_mean_array_c, X).fit()
+        pred_SSRT_mean_c = reg_mean_c.predict(X)
+        print(reg_mean_c.summary())
+
         axins = ax.inset_axes(inset_dim)
         axins.errorbar(RT_array_c, SSRT_mean_array_c, yerr=SSRT_std_array_c, fmt='o', color=color_point, ecolor='black', 
                                  elinewidth=elinewidth/2, linestyle='none',capsize=capsize/2, ms=ms/2)
@@ -2652,7 +2924,7 @@ def SSRT_plot(comm_dict, diff_dict):
         axins.set_yticklabels([int(((min_val_y_c + dy_c)//10)*10), int(((min_val_y_c + 2*dy_c)//10 + 1)*10)])
         axins.tick_params(labelsize=inset_font)
     
-    fig_file = saved_path / 'SSRT_vs_RT.png'
+    fig_file = saved_path / f'SSRT_vs_RT{text}_{load}.png'
     plt.savefig(fig_file)
 
     corr = np.corrcoef(RT_array, mean_SSRT_array)[0, 1]
@@ -2668,6 +2940,7 @@ def consistent_sim(comm_dict, diff_dict):
     RT_detector = comm_dict["RT_detector"]
     saved_path = comm_dict["saved_path"]
     with_Cornelio = comm_dict["with_Cornelio"]
+    t = comm_dict["t"]
     
     data = diff_dict["data"]
     n_trials = diff_dict["n_trials"]
@@ -2684,21 +2957,22 @@ def consistent_sim(comm_dict, diff_dict):
     x_ticks_hist = diff_dict["x_ticks_hist"]
     inset_dim = diff_dict["inset_dim"]
     inset_font = diff_dict["inset_font"]
+    use_peak = diff_dict["use_peak"]
+    # figsize = diff_dict["figsize"]
     
-    test_set = data["set_cn_ordRT"]
-    test_cont = data["cont_cn_ordRT"]
-    test_RT = data["RT_cn_ordRT"]
-    
-    _, steps, _ = test_set.shape
-    
-    _, steps, _ = test_set.shape
+    steps = len(t)
     teacher = sim_start//(5*tau)
     alone = steps - teacher
-    
-    MUA_true = test_set.mean(2)
+    text= "_peak" if use_peak else ""
     
     if compute:
-    
+        test_set = data["set_cn_ordRT"]
+        test_cont = data["cont_cn_ordRT"]
+        test_RT = data["RT_cn_ordRT"]
+                    
+        MUA_true = test_set.mean(2)
+        np.save(saved_path / f"MUA_true.npy", MUA_true)
+            
         z_cn, _, _ = infer_latent(dmm, data, device)
         z_cn = torch.from_numpy(z_cn).float().to(device)
 
@@ -2713,12 +2987,18 @@ def consistent_sim(comm_dict, diff_dict):
         y_mean, y_logvar = dmm.generation_x(z_teach)
         y_pred = dmm.reparameterization(y_mean, y_logvar)
         z_teach = z_teach.permute(1, 0, 2)
-        RT_output = RT_detector(z_teach)
-        RT_estimate = prob_to_RT(RT_output, tau)    
 
         y_pred = y_pred.permute(1, 0, 2)
         y_pred = y_pred.cpu().detach().numpy()
         MUA_pred = y_pred.mean(2)
+        if use_peak:
+            RT_pred = np.argmax(MUA_pred[:, 56//tau:], axis=1)
+            intercept = np.load(saved_path / 'RT_offset.npy')
+            RT_estimate = RT_pred - intercept 
+        else:
+            RT_output = RT_detector(z_teach)
+            RT_estimate = prob_to_RT(RT_output, tau)   
+        
         RT_est_sort = np.argsort(RT_estimate)
         MUA_pred = MUA_pred[RT_est_sort]
         
@@ -2727,13 +3007,15 @@ def consistent_sim(comm_dict, diff_dict):
         RT_true = test_RT*5
         RT_pred = RT_estimate*tau*5
         
-        np.savez(saved_path / f"RT_distribution_{n_trials}.npz", MUA_pred=MUA_pred, RT_true=RT_true, RT_pred=RT_pred)
+        np.savez(saved_path / f"RT_distribution_{n_trials}{text}.npz", MUA_pred=MUA_pred, RT_true=RT_true, RT_pred=RT_pred)
     else:
-        with np.load(saved_path / f"RT_distribution_{n_trials}.npz", allow_pickle=True) as loaded_file:
+        with np.load(saved_path / f"RT_distribution_{n_trials}{text}.npz", allow_pickle=True) as loaded_file:
             MUA_pred = loaded_file["MUA_pred"]
             RT_true = loaded_file["RT_true"]
             RT_pred = loaded_file["RT_pred"]
 
+        MUA_true = np.load(saved_path / "MUA_true.npy", allow_pickle=True)
+    
     vmin = -3
     vmax = 3
 
@@ -2742,7 +3024,7 @@ def consistent_sim(comm_dict, diff_dict):
 
     x_ticks = len(x_positions)
     n_xticks, _ = n_ticks
-
+    
     #---------- FIG 4A ----------#
     fig, ax = plt.subplots()
     im1 = ax.imshow(MUA_true[:, 56//tau:], cmap = cmap, aspect='auto', vmin=vmin, vmax=vmax)
@@ -2755,7 +3037,7 @@ def consistent_sim(comm_dict, diff_dict):
     cbar=plt.colorbar(im1, ax=ax)
     cbar.set_ticks([vmin, 0, vmax])
     
-    fig_file = saved_path / 'MUA_true.png'
+    fig_file = saved_path / f'MUA_true{text}.png'
     plt.savefig(fig_file)
     
     #---------- FIG 4B ----------#
@@ -2767,13 +3049,13 @@ def consistent_sim(comm_dict, diff_dict):
     ax.set_yticklabels([])
     ax.set_xlabel('Time from GO signal ($ms$)')
     ax.set_ylabel('Trial #')
-    cbar=plt.colorbar(im1, ax=ax)
+    cbar=plt.colorbar(im2, ax=ax)
     cbar.set_ticks([vmin, 0, vmax])
     
-    fig_file = saved_path / 'MUA_gen.png'
+    fig_file = saved_path / f'MUA_gen{text}.png'
     plt.savefig(fig_file)
     
-    
+    print(f"using {len(RT_true)} true trials and {len(RT_pred)} predicted trials for Piero")
     #---------- FIG 4A ----------#
     statistic, p_value = ks_2samp(RT_true, RT_pred)
     print("\n--- Test di Kolmogorov-Smirnov (K-S) ---")
@@ -2792,6 +3074,7 @@ def consistent_sim(comm_dict, diff_dict):
     min_value = RT_true.min() - 50
     max_value = RT_true.max() + 50
     bin_edges = np.linspace(min_value, max_value, num_bins + 1)
+
     
     fig, ax = plt.subplots()
     ax.hist(RT_true, bins=bin_edges, density=True, alpha = alpha, color=color_true, edgecolor='none')
@@ -2804,10 +3087,11 @@ def consistent_sim(comm_dict, diff_dict):
     ax.set_ylabel('Counts')
     
     if with_Cornelio:
-        with np.load(saved_path.parent / with_Cornelio / f"RT_distribution_{n_trials}.npz", allow_pickle=True) as loaded_file:
+        with np.load(saved_path.parent / with_Cornelio / f"RT_distribution_{n_trials}{text}.npz", allow_pickle=True) as loaded_file:
                 RT_true = loaded_file["RT_true"]
                 RT_pred = loaded_file["RT_pred"]
     
+        print(f"using {len(RT_true)} true trials and {len(RT_pred)} predicted trials for Cornelio")
         statistic, p_value = ks_2samp(RT_true, RT_pred)
         print("\n--- Test di Kolmogorov-Smirnov (K-S) Cornelio ---")
         print(f"Statistica del test: {statistic:.4f}")
@@ -2838,5 +3122,5 @@ def consistent_sim(comm_dict, diff_dict):
         axins.set_ylabel('Counts', fontsize=inset_font)
         axins.tick_params(labelsize=inset_font)
 
-    fig_file = saved_path / 'RT_distribution.png'
+    fig_file = saved_path / f'RT_distribution{text}.png'
     plt.savefig(fig_file)

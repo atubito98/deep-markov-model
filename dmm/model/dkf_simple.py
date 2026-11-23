@@ -136,18 +136,20 @@ class DKF_simple(nn.Module):
         return cov, L
    
 
-    def reparameterization_cov(self, mean, L):
+    def reparameterization_cov(self, mean, L, eps=None):
         
-        eps = torch.randn_like(mean)
+        if eps is None:
+            eps = torch.randn_like(mean)
         std = torch.matmul(L, eps.unsqueeze(-1))
         z = mean + std.squeeze(-1)
         
         return z
     
-    def reparameterization(self, mean, logvar):
+    def reparameterization(self, mean, logvar, eps=None):
 
         std = torch.exp(0.5*logvar)
-        eps = torch.randn_like(std)
+        if eps is None:
+            eps = torch.randn_like(std)
         
         return torch.addcmul(mean, eps, std)
     

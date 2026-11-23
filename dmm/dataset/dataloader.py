@@ -14,6 +14,8 @@ def load_session_data(data_path, selection,session, DEMEANED=False, NORMALIZED=T
         y_direction=np.array(andreaData["y_direction"])
         y_RT=np.array(andreaData["y_RT"])
         y_SSD=np.array(andreaData["y_SSD"])
+        y_stop=np.array(andreaData["y_stop"])
+        y_reward =np.array(andreaData["y_reward"])
 
 
     #selec no stop
@@ -28,8 +30,9 @@ def load_session_data(data_path, selection,session, DEMEANED=False, NORMALIZED=T
         RT=y_RT[sel]
         SSD=y_SSD[sel]
         direction=y_direction[sel]
-    session =session*np.ones(data.shape[0])
-    subject = np.array([data_path.split("/")[-1][0] == "P"]*data.shape[0])  # 1 is piero, 0 Cornelio
+    session = session*np.ones(data.shape[0])
+    # subject = np.array([data_path.split("/")[-1][0] == "P"]*data.shape[0])  # 1 is piero, 0 Cornelio
+    subject = np.full(data.shape[0], data_path.name[0] == "P")
     direction_binary = direction == "right"  # 1 right, 0 left
     
     if DEMEANED:

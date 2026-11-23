@@ -116,7 +116,16 @@ class Learning_move_detector():
         self.weights_dir = self.params['weights_dir']
         self.device = device if device is not None else self.params["device"]
         self.saved_dir = self.params["saved_dir"] if saved_dir is None else saved_dir
-        
+
+        # weights_dir may have been saved as an absolute path on a different
+        # machine (e.g. '/DKF_simple_final_epoch178.pt'). Resolve it to just the
+        # basename so that self.saved_dir / self.weights_dir always works.
+        if not os.path.exists(self.saved_dir / self.weights_dir):
+            _basename = os.path.basename(str(self.weights_dir))
+            _candidate = self.saved_dir / _basename
+            if os.path.exists(_candidate):
+                self.weights_dir = _basename
+
         dmm_params = {
             "cfg": self.saved_dir / "config.ini",
             "device": self.device,
@@ -125,7 +134,7 @@ class Learning_move_detector():
 
         learning_algo = LearningAlgorithm_dir(params=dmm_params)
         self.dmm = learning_algo.model
-        self.dmm.load_state_dict(torch.load(self.saved_dir / self.weights_dir, map_location=self.device))
+        self.dmm.load_state_dict(torch.load(self.saved_dir / self.weights_dir, map_location=self.device, weights_only=False))
         self.dmm.eval()
         self.tau = self.dmm.tau
         self.z_dim = self.dmm.z_dim
@@ -289,7 +298,7 @@ class Learning_move_detector():
     # Function to load model weights
     def load(self, saved_dict):
         if os.path.exists(self.saved_dir):
-            checkpoint = torch.load(self.saved_dir / saved_dict, map_location=self.device)
+            checkpoint = torch.load(self.saved_dir / saved_dict, map_location=self.device, weights_only=False)
             self.model.load_state_dict(checkpoint['model_state_dict'])
             #self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             epoch = checkpoint['epoch']

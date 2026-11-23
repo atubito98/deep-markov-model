@@ -76,8 +76,8 @@ def split(cfg):
         random_seed = cfg.getint('DataFrame', 'seed')
 
     data_path_array = [
-                       '/dmm/dataset/MUA/data/Piero_20131202.npz',    #####
-                       '/dmm/dataset/MUA/data/Piero_20140109.npz',    #####
+                       'dmm/dataset/MUA/data/Piero_20131202.npz',    #####
+                       'dmm/dataset/MUA/data/Piero_20140109.npz',    #####
                        'dmm/dataset/MUA/data/Piero_20140116.npz',    #####
 #                        'dmm/dataset/MUA/data/Piero_20140606.npz',
 #                        'dmm/dataset/MUA/data/Piero_20140701.npz',
