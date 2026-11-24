@@ -1027,8 +1027,8 @@ def plot_cycle_shift_short(comm_dict, diff_dict):
         dx_fix = torch.full((set_cn_long.shape[0]*n_trials,), l).to(device)
         dx_fix_min = torch.full((set_cn_long.shape[0]*n_trials,), 0.0001).to(device)
         dx_array = np.empty([stimulation_steps, 96])
-        stim_effect = torch.zeros([stimulation_steps, set_cn_long.shape[0]*n_trials, 96]).to(device)
-        stim_effect_min = torch.zeros([stimulation_steps, set_cn_long.shape[0]*n_trials, 96]).to(device)
+        stim_effect = np.zeros([stimulation_steps, set_cn_long.shape[0] * n_trials, 96], dtype=np.float32)
+        stim_effect_min = np.zeros([stimulation_steps, set_cn_long.shape[0]*n_trials, 96], dtype=np.float32)
         for t in range(stimulation_steps):
             print(t)
             # x -> x + dx
@@ -1169,7 +1169,7 @@ def plot_cycle_shift_long(comm_dict, diff_dict):
         cont_cn = data["cont_cn_ordRT"]
         z_cn, _, _ = infer_latent(dmm, data, device, n_trials)
             
-        steps = len(t)
+        steps, s, _ = z_cn.shape
         samples = len(RT_cn)    # s = samples * n_trials
             
         if mean_trials:
@@ -1229,6 +1229,7 @@ def plot_cycle_shift_long(comm_dict, diff_dict):
         stim_effect = np.zeros([stimulation_steps, set_cn_short.shape[0] * n_trials, 96], dtype=np.float32)
         stim_effect_min = np.zeros([stimulation_steps, set_cn_short.shape[0]*n_trials, 96], dtype=np.float32)
         for t in range(stimulation_steps):
+            print(t)
             # x -> x + dx
             if stimolate:
                 _, dx = compute_dx_for_last_step_ElasticNet(dmm, 
@@ -1293,7 +1294,7 @@ def plot_cycle_shift_long(comm_dict, diff_dict):
 
             alone = steps - teacher
             for cycle_step in range(alone):
-                
+                                    
                 z_mean_gen, z_cov_gen = dmm.generation_z(z_modified[-1].unsqueeze(0), cont_RTshort[teacher+cycle_step].unsqueeze(0))
                 z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
                 z_modified = torch.cat((z_modified, z_gen), dim=0)
@@ -1427,12 +1428,14 @@ def make_RThist(comm_dict, diff_dict, last_stim, z_modified, z_generated, text, 
     
     suffix = "" if stimolate else "_onech"
     # text_mean = "_mean" if mean else ""
+        
+    RT_detector.eval()  # make sure dropout/batchnorm are in eval mode
     with torch.no_grad():
         RT_output = RT_detector(z_modified.permute(1, 0, 2))
-        RT_gen = RT_detector(z_generated.permute(1, 0, 2))
+        RT_gen_out = RT_detector(z_generated.permute(1, 0, 2))
     
     RT_estimate = prob_to_RT(RT_output, tau)
-    RT_estimate_gen = prob_to_RT(RT_gen, tau)  
+    RT_estimate_gen = prob_to_RT(RT_gen_out, tau)  
     
     RT_gen = (RT_estimate*tau)*5
     RT_gen_true = (RT_estimate_gen*tau)*5
