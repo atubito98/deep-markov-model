@@ -961,45 +961,40 @@ def plot_cycle_shift_short(comm_dict, diff_dict):
     add_residual = diff_dict["add_residual"]
     thr = diff_dict["thr"]
     
-    RT_cn = data["RT_cn_ordRT"]
-    set_cn = data["set_cn_ordRT"]
-    cont_cn = data["cont_cn_ordRT"]
-    z_cn, _, _ = infer_latent(dmm, data, device, n_trials)
-    
-    steps, s, _ = z_cn.shape
-    samples = len(RT_cn)    # s = samples * n_trials
-    
-    if mean_trials:
-        z_cn = z_cn.reshape(steps, samples, n_trials, z_dim)
-        z_cn = z_cn.mean(2)
-        color = RT_cn/RT_cn.max()
-    else:
-        set_cn = set_cn.repeat(n_trials, 1, 1)
-        RT_cn_rep = np.repeat(RT_cn, n_trials)
-        color = RT_cn_rep/RT_cn_rep.max()
-    z_GO = z_cn[step//tau]
-    
-    long_index = int(z_GO.shape[0] * (1-f))
-    set_cn_long = set_cn[long_index:]
-    cont_cn_long = cont_cn[long_index:]
-    
-    n_long, _, features = set_cn_long.shape
-  
-    trial_true = torch.from_numpy(set_cn_long).float().to(device).permute(1, 0, 2).repeat_interleave(n_trials, dim=1)
-    cont_RTlong = torch.from_numpy(cont_cn_long).float().to(device).permute(1, 0, 2).repeat_interleave(n_trials, dim=1)
-    
-    start_sim = step//tau + 1 - stimulation_steps
-    
     text = "" if stimolate else "_onech"
     text_mean = "_mean" if mean else ""
-    file_path = saved_path / f'long_trials_{l}{text}{text_mean}.pt'
-        
-    torch.save({
-        'trial_true': trial_true,
-        'cont_RT': cont_RTlong,
-    }, file_path)
+    file_path = saved_path / f'shorter_{l}{text}{text_mean}.pt'
     
     if compute:
+        RT_cn = data["RT_cn_ordRT"]
+        set_cn = data["set_cn_ordRT"]
+        cont_cn = data["cont_cn_ordRT"]
+        z_cn, _, _ = infer_latent(dmm, data, device, n_trials)
+            
+        steps, s, _ = z_cn.shape
+        samples = len(RT_cn)    # s = samples * n_trials
+            
+        if mean_trials:
+            z_cn = z_cn.reshape(steps, samples, n_trials, z_dim)
+            z_cn = z_cn.mean(2)
+            color = RT_cn/RT_cn.max()
+        else:
+            set_cn = set_cn.repeat(n_trials, 1, 1)
+            RT_cn_rep = np.repeat(RT_cn, n_trials)
+            color = RT_cn_rep/RT_cn_rep.max()
+        z_GO = z_cn[step//tau]
+            
+        long_index = int(z_GO.shape[0] * (1-f))
+        set_cn_long = set_cn[long_index:]
+        cont_cn_long = cont_cn[long_index:]
+            
+        n_long, _, features = set_cn_long.shape
+          
+        trial_true = torch.from_numpy(set_cn_long).float().to(device).permute(1, 0, 2).repeat_interleave(n_trials, dim=1)
+        cont_RTlong = torch.from_numpy(cont_cn_long).float().to(device).permute(1, 0, 2).repeat_interleave(n_trials, dim=1)
+            
+        start_sim = step//tau + 1 - stimulation_steps
+        
         # --- STIMA DIREZIONE ---
         reg = LinearRegression().fit(z_GO, color)
         direction = reg.coef_
@@ -1090,29 +1085,55 @@ def plot_cycle_shift_short(comm_dict, diff_dict):
 
         stim_effect = stim_effect.cpu().detach().numpy()
         stim_effect_min = stim_effect_min.cpu().detach().numpy()
-        trial_stim = trial_modified.cpu().detach().numpy()
+                
+        teacher = step//tau + 1
+                                                                          
+        z_generated, _, _ = dmm.inference(trial_true[:teacher], cont_RTlong[:teacher])
+        z_modified, _, _ = dmm.inference(trial_modified, cont_RTlong[:teacher])
+                
+        alone = steps - teacher
+                    
+        for cycle_step in range(alone):
+                        
+            z_mean_gen, z_cov_gen = dmm.generation_z(z_modified[-1].unsqueeze(0), cont_RTlong[teacher+cycle_step].unsqueeze(0))
+            z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
+            z_modified = torch.cat((z_modified, z_gen), dim=0)
+                        
+            z_mean_gen, z_cov_gen = dmm.generation_z(z_generated[-1].unsqueeze(0), cont_RTlong[teacher+cycle_step].unsqueeze(0))
+            z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
+            z_generated = torch.cat((z_generated, z_gen), dim=0)
+                        
+        torch.save({
+            'z_modified': z_modified,
+            'z_generated': z_generated,
+        }, file_path)
     
-        np.savez(saved_path / f"shorter_RT_{l}{text}{text_mean}.npz", trial_stim=trial_stim, stim_effect=stim_effect, stim_effect_min=stim_effect_min, dx_array=dx_array)
+        np.savez(saved_path / f"shorter_RT_{l}{text}{text_mean}.npz", stim_effect=stim_effect, stim_effect_min=stim_effect_min, dx_array=dx_array)
     else:
         with np.load(saved_path / f"shorter_RT_{l}{text}{text_mean}.npz") as loaded_file:
-            trial_stim = loaded_file["trial_stim"]
             dx_array = loaded_file["dx_array"]
             if not stimolate:
                 stim_effect = loaded_file["stim_effect"]
                 stim_effect_min = loaded_file["stim_effect_min"]
-                diff_stim = stim_effect - stim_effect_min
-        print(trial_stim.shape)
-        trial_modified = torch.from_numpy(trial_stim).float().to(device)
-    
-    if stimolate:
+                
+        data = torch.load(file_path, 
+                        map_location=device,
+                        weights_only=True
+        )
+                                
+        z_modified = data['z_modified']
+        z_generated = data['z_generated']
+                
+    if stimolate:  
         dx_array = channel2grid(dx_array)
         last_stim = dx_array[-1].copy()
         last_stim[last_stim < thr] = 0
-    else:
+    else:      
+        diff_stim = stim_effect - stim_effect_min
         mean_stim_effect = diff_stim.mean(1)
         last_stim = channel2grid(mean_stim_effect)
-    
-    make_RThist(comm_dict, diff_dict, last_stim, trial_modified, file_path, 'shorter')
+                        
+    make_RThist(comm_dict, diff_dict, last_stim, z_modified, z_generated, 'shorter')
     
     
 def plot_cycle_shift_long(comm_dict, diff_dict):
@@ -1123,7 +1144,6 @@ def plot_cycle_shift_long(comm_dict, diff_dict):
     tau = comm_dict["tau"]
     saved_path = comm_dict["saved_path"]
     
-    data = diff_dict["data"]
     n_trials = diff_dict["n_trials"]
     mean = diff_dict["mean"]
     step = diff_dict["step"]
@@ -1139,45 +1159,42 @@ def plot_cycle_shift_long(comm_dict, diff_dict):
     add_residual = diff_dict["add_residual"]
     thr = diff_dict["thr"]
     
-    RT_cn = data["RT_cn_ordRT"]
-    set_cn = data["set_cn_ordRT"]
-    cont_cn = data["cont_cn_ordRT"]
-    z_cn, _, _ = infer_latent(dmm, data, device, n_trials)
-    
-    steps, _, _ = z_cn.shape
-    samples = len(RT_cn)    # s = samples * n_trials
-    
-    if mean_trials:
-        z_cn = z_cn.reshape(steps, samples, n_trials, z_dim)
-        z_cn = z_cn.mean(2)
-        color = RT_cn/RT_cn.max()
-    else:
-        set_cn = set_cn.repeat(n_trials, 1, 1)
-        RT_cn_rep = np.repeat(RT_cn, n_trials)
-        color = RT_cn_rep/RT_cn_rep.max()
-    z_GO = z_cn[step//tau]
-    
-    short_index = int(z_GO.shape[0] // (1/f))
-    
-    set_cn_short = set_cn[:short_index]
-    cont_cn_short = cont_cn[:short_index]
-    
-    n_short, _, features = set_cn_short.shape
-    
-    trial_true = torch.from_numpy(set_cn_short).float().to(device).permute(1, 0, 2).repeat_interleave(n_trials, dim=1) 
-    cont_RTshort = torch.from_numpy(cont_cn_short).float().to(device).permute(1, 0, 2).repeat_interleave(n_trials, dim=1)
-    
-    start_sim = step//tau + 1 - stimulation_steps
     text = "" if stimolate else "_onech"
     text_mean = "_mean" if mean else ""
-    file_path = saved_path / f'long_trials_{l}{text}{text_mean}.pt'
-    
-    torch.save({
-        'trial_true': trial_true,
-        'cont_RT': cont_RTshort,
-    }, file_path)
+    file_path = saved_path / f'longer_{l}{text}{text_mean}.pt'
     
     if compute:
+        data = diff_dict["data"]
+        RT_cn = data["RT_cn_ordRT"]
+        set_cn = data["set_cn_ordRT"]
+        cont_cn = data["cont_cn_ordRT"]
+        z_cn, _, _ = infer_latent(dmm, data, device, n_trials)
+            
+        steps = len(t)
+        samples = len(RT_cn)    # s = samples * n_trials
+            
+        if mean_trials:
+            z_cn = z_cn.reshape(steps, samples, n_trials, z_dim)
+            z_cn = z_cn.mean(2)
+            color = RT_cn/RT_cn.max()
+        else:
+            set_cn = set_cn.repeat(n_trials, 1, 1)
+            RT_cn_rep = np.repeat(RT_cn, n_trials)
+            color = RT_cn_rep/RT_cn_rep.max()
+        z_GO = z_cn[step//tau]
+            
+        short_index = int(z_GO.shape[0] // (1/f))
+            
+        set_cn_short = set_cn[:short_index]
+        cont_cn_short = cont_cn[:short_index]
+        
+        n_short, _, features = set_cn_short.shape
+        
+        trial_true = torch.from_numpy(set_cn_short).float().to(device).permute(1, 0, 2).repeat_interleave(n_trials, dim=1) 
+        cont_RTshort = torch.from_numpy(cont_cn_short).float().to(device).permute(1, 0, 2).repeat_interleave(n_trials, dim=1)
+            
+        start_sim = step//tau + 1 - stimulation_steps
+        
         # --- STIMA DIREZIONE ---
         reg = LinearRegression().fit(z_GO, color)
         direction = reg.coef_
@@ -1194,8 +1211,9 @@ def plot_cycle_shift_long(comm_dict, diff_dict):
                 delta_z_long[t] = torch.from_numpy(direction * l).float().to(device) 
                 
         trial_clone = trial_true[:(step//tau + 1)].clone()
-        y_mean, y_logvar = dmm(trial_clone, cont_RTshort[:(step//tau + 1)])
-        y_pred = dmm.reparameterization(y_mean, y_logvar)
+        with torch.inference_mode():
+            y_mean, y_logvar = dmm(trial_clone, cont_RTshort[:(step//tau + 1)])
+            y_pred = dmm.reparameterization(y_mean, y_logvar)
         if mean:
             y_mean = y_mean.reshape(-1, n_short, n_trials, features).mean(2)
             residual = trial_clone - y_mean.repeat_interleave(n_trials, dim=1)
@@ -1209,8 +1227,8 @@ def plot_cycle_shift_long(comm_dict, diff_dict):
         dx_fix = torch.full((set_cn_short.shape[0]*n_trials,), l).to(device)
         dx_fix_min = torch.full((set_cn_short.shape[0]*n_trials,), 0.001).to(device)
         dx_array = np.empty([stimulation_steps, 96])
-        stim_effect = torch.zeros([stimulation_steps, set_cn_short.shape[0]*n_trials, 96]).to(device)
-        stim_effect_min = torch.zeros([stimulation_steps, set_cn_short.shape[0]*n_trials, 96]).to(device)
+        stim_effect = np.zeros([stimulation_steps, set_cn_short.shape[0] * n_trials, 96], dtype=np.float32)
+        stim_effect_min = np.zeros([stimulation_steps, set_cn_short.shape[0]*n_trials, 96], dtype=np.float32)
         for t in range(stimulation_steps):
             # x -> x + dx
             if stimolate:
@@ -1230,13 +1248,14 @@ def plot_cycle_shift_long(comm_dict, diff_dict):
                 continue
             trial_cut = trial_modified.clone()
             # z_t = enc(x+dx)
-            z_modified, _, _ = dmm.inference(trial_cut[:(start_sim + t + 1)], cont_RTshort[:(start_sim + t + 1)])
-            # z_{t+1} = prop(z_t)
-            z_mean_gen, z_cov_gen = dmm.generation_z(z_modified[-1].unsqueeze(0), cont_RTshort[start_sim + t + 1].unsqueeze(0))
-            z_gen_last = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
-            # x_{t+1} = dec(z_{t+1})
-            y_mean, y_logvar = dmm.generation_x(z_gen_last)
-            y_pred = dmm.reparameterization(y_mean, y_logvar)
+            with torch.inference_mode():
+                z_modified, _, _ = dmm.inference(trial_cut[:(start_sim + t + 1)], cont_RTshort[:(start_sim + t + 1)])
+                # z_{t+1} = prop(z_t)
+                z_mean_gen, z_cov_gen = dmm.generation_z(z_modified[-1].unsqueeze(0), cont_RTshort[start_sim + t + 1].unsqueeze(0))
+                z_gen_last = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
+                # x_{t+1} = dec(z_{t+1})
+                y_mean, y_logvar = dmm.generation_x(z_gen_last)
+                y_pred = dmm.reparameterization(y_mean, y_logvar)
             if mean:
                 y_gen = y_mean
             else:
@@ -1245,17 +1264,18 @@ def plot_cycle_shift_long(comm_dict, diff_dict):
             trial_modified[start_sim + t + 1] = y_gen[0]
             if add_residual:
                 trial_modified[start_sim + t + 1] += residual[start_sim + t + 1]
-            stim_effect[t] = trial_modified[start_sim + t + 1] - trial_true[start_sim + t + 1]
+            stim_effect[t] = (trial_modified[start_sim + t + 1] -trial_true[start_sim + t + 1]).detach().cpu().numpy()
             
             trial_cut_min = trial_modified_min.clone()
             # z_t = enc(x+dx)
-            z_modified, _, _ = dmm.inference(trial_cut_min[:(start_sim + t + 1)], cont_RTshort[:(start_sim + t + 1)])
-            # z_{t+1} = prop(z_t)
-            z_mean_gen, z_cov_gen = dmm.generation_z(z_modified[-1].unsqueeze(0), cont_RTshort[start_sim + t + 1].unsqueeze(0))
-            z_gen_last = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
-            # x_{t+1} = dec(z_{t+1})
-            y_mean, y_logvar = dmm.generation_x(z_gen_last)
-            y_pred = dmm.reparameterization(y_mean, y_logvar)
+            with torch.inference_mode():
+                z_modified, _, _ = dmm.inference(trial_cut_min[:(start_sim + t + 1)], cont_RTshort[:(start_sim + t + 1)])
+                # z_{t+1} = prop(z_t)
+                z_mean_gen, z_cov_gen = dmm.generation_z(z_modified[-1].unsqueeze(0), cont_RTshort[start_sim + t + 1].unsqueeze(0))
+                z_gen_last = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
+                # x_{t+1} = dec(z_{t+1})
+                y_mean, y_logvar = dmm.generation_x(z_gen_last)
+                y_pred = dmm.reparameterization(y_mean, y_logvar)
             if mean:
                 y_gen = y_mean
             else:
@@ -1264,33 +1284,69 @@ def plot_cycle_shift_long(comm_dict, diff_dict):
             trial_modified_min[start_sim + t + 1] = y_gen[0]
             if add_residual:
                 trial_modified_min[start_sim + t + 1] += residual[start_sim + t + 1]
-            stim_effect_min[t] = trial_modified_min[start_sim + t + 1] - trial_true[start_sim + t + 1]
+            stim_effect_min[t] = (trial_modified_min[start_sim + t + 1] - trial_true[start_sim + t + 1]).detach().cpu().numpy()
 
-        stim_effect = stim_effect.cpu().detach().numpy()
-        stim_effect_min = stim_effect_min.cpu().detach().numpy()
-        trial_stim = trial_modified.cpu().detach().numpy()
+        # stim_effect = stim_effect.cpu().detach().numpy()
+        # stim_effect_min = stim_effect_min.cpu().detach().numpy()
+        # trial_stim = trial_modified.cpu().detach().numpy()
+        
+        teacher = step//tau + 1
+        
+        with torch.inference_mode():                                                          
+            z_generated, _, _ = dmm.inference(trial_true[:teacher], cont_RTshort[:teacher])
+            z_modified, _, _ = dmm.inference(trial_modified, cont_RTshort[:teacher])
+            
+            z_modified_list = [z_modified]
+            z_generated_list = [z_generated]
+
+            alone = steps - teacher
+            for cycle_step in range(alone):
+                
+                z_mean_gen, z_cov_gen = dmm.generation_z(z_modified[-1].unsqueeze(0), cont_RTshort[teacher+cycle_step].unsqueeze(0))
+                z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
+                z_modified_list.append(z_gen)
+                # z_modified = torch.cat((z_modified, z_gen), dim=0)
+                
+                z_mean_gen, z_cov_gen = dmm.generation_z(z_generated[-1].unsqueeze(0), cont_RTshort[teacher+cycle_step].unsqueeze(0))
+                z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
+                z_generated_list.append(z_gen)
+                # z_generated = torch.cat((z_generated, z_gen), dim=0)
+                
+            z_modified = torch.cat(z_modified_list, dim=0)
+            z_generated = torch.cat(z_generated_list, dim=0)
+                
+        torch.save({
+            'z_modified': z_modified,
+            'z_generated': z_generated,
+        }, file_path)
     
-        np.savez(saved_path / f"longer_RT_{l}{text}{text_mean}.npz", trial_stim = trial_stim, stim_effect_min=stim_effect_min, stim_effect = stim_effect, dx_array = dx_array)
+        np.savez(saved_path / f"longer_RT_{l}{text}{text_mean}.npz", stim_effect_min=stim_effect_min, stim_effect = stim_effect, dx_array = dx_array)
     else:
         with np.load(saved_path / f"longer_RT_{l}{text}{text_mean}.npz") as loaded_file:
-            trial_stim = loaded_file["trial_stim"]
+            # trial_stim = loaded_file["trial_stim"]
             dx_array = loaded_file["dx_array"]
             if not stimolate:
                 stim_effect = loaded_file["stim_effect"]
                 stim_effect_min = loaded_file["stim_effect_min"]
-                diff_stim = stim_effect - stim_effect_min
                 
-        trial_modified = torch.from_numpy(trial_stim).float().to(device)
-    
+        data = torch.load(file_path, 
+                        map_location=device,
+                        weights_only=True
+        )
+                                        
+        z_modified = data['z_modified']
+        z_generated = data['z_generated']
+                        
     if stimolate:  
         dx_array = channel2grid(dx_array)
         last_stim = dx_array[-1].copy()
         last_stim[last_stim < thr] = 0
-    else:
+    else:      
+        diff_stim = stim_effect - stim_effect_min
         mean_stim_effect = diff_stim.mean(1)
-        last_stim = channel2grid(mean_stim_effect)
-    
-    make_RThist(comm_dict, diff_dict, last_stim, trial_modified, file_path, 'longer')
+        last_stim = channel2grid(mean_stim_effect)        
+            
+    make_RThist(comm_dict, diff_dict, last_stim, z_modified, z_generated, 'longer')
 
 
 def compute_dx_for_last_step_ElasticNet(dmm, x_seq, c_seq, delta_z, alpha_l1=1e-3, l1_ratio=1, n_iter=1):
@@ -1360,7 +1416,7 @@ def compute_dx_for_last_step_ElasticNet(dmm, x_seq, c_seq, delta_z, alpha_l1=1e-
     return x_seq, dx_last
     
 
-def make_RThist(comm_dict, diff_dict, last_stim, trial_modified, file_path, text, RT_true=None):
+def make_RThist(comm_dict, diff_dict, last_stim, z_modified, z_generated, text, RT_true=None):
     
     dmm = comm_dict["dmm"]
     tau = comm_dict["tau"]
@@ -1386,31 +1442,6 @@ def make_RThist(comm_dict, diff_dict, last_stim, trial_modified, file_path, text
     text = "" if stimolate else "_onech"
     # text_mean = "_mean" if mean else ""
         
-    steps = 256//tau
-    teacher = step//tau + 1
-                                    
-    data = torch.load(file_path, 
-                      map_location=device,
-                      weights_only=True)
-
-    trial_true = data['trial_true']
-    cont_RT = data['cont_RT']
-                                                          
-    z_generated, _, _ = dmm.inference(trial_true[:teacher], cont_RT[:teacher])
-    z_modified, _, _ = dmm.inference(trial_modified, cont_RT[:teacher])
-
-    alone = steps - teacher
-    
-    for cycle_step in range(alone):
-        
-        z_mean_gen, z_cov_gen = dmm.generation_z(z_modified[-1].unsqueeze(0), cont_RT[teacher+cycle_step].unsqueeze(0))
-        z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
-        z_modified = torch.cat((z_modified, z_gen), dim=0)
-        
-        z_mean_gen, z_cov_gen = dmm.generation_z(z_generated[-1].unsqueeze(0), cont_RT[teacher+cycle_step].unsqueeze(0))
-        z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
-        z_generated = torch.cat((z_generated, z_gen), dim=0)
-        
     RT_output = RT_detector(z_modified.permute(1, 0, 2))
     RT_estimate = prob_to_RT(RT_output, tau)
 
@@ -1427,7 +1458,6 @@ def make_RThist(comm_dict, diff_dict, last_stim, trial_modified, file_path, text
     
     print(f"True mean RT: {RT_gen_true.mean()}")
     print(f"Generated mean RT: {RT_gen.mean()}")
-    
     
     fig, ax = plt.subplots()
     ax.hist(RT_gen_true, bins=bin_edges, alpha = alpha, density=True, color=color_true, edgecolor='none')
@@ -1792,7 +1822,7 @@ def plot_cs_ns(comm_dict, diff_dict):
         
         np.savez(saved_path / "pca_data.npz", pc_cs=pc_cs, pc_ws=pc_ws, pc_cn=pc_cn)
     else:
-        with np.load(saved_path / "pca_data_cs_ws.npz") as loaded_file:
+        with np.load(saved_path / "pca_data.npz") as loaded_file:
             pc_cs = loaded_file["pc_cs"]
             pc_ws = loaded_file["pc_ws"]
             
