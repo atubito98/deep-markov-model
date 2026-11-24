@@ -1027,8 +1027,8 @@ def plot_cycle_shift_short(comm_dict, diff_dict):
         dx_fix = torch.full((set_cn_long.shape[0]*n_trials,), l).to(device)
         dx_fix_min = torch.full((set_cn_long.shape[0]*n_trials,), 0.0001).to(device)
         dx_array = np.empty([stimulation_steps, 96])
-        stim_effect = torch.zeros([stimulation_steps, set_cn_long.shape[0]*n_trials, 96]).to(device)
-        stim_effect_min = torch.zeros([stimulation_steps, set_cn_long.shape[0]*n_trials, 96]).to(device)
+        stim_effect = np.zeros([stimulation_steps, set_cn_long.shape[0] * n_trials, 96], dtype=np.float32)
+        stim_effect_min = np.zeros([stimulation_steps, set_cn_long.shape[0]*n_trials, 96], dtype=np.float32)
         for t in range(stimulation_steps):
             print(t)
             # x -> x + dx
@@ -1049,13 +1049,14 @@ def plot_cycle_shift_short(comm_dict, diff_dict):
                 continue
             trial_cut = trial_modified.clone()
             # z_t = enc(x+dx)
-            z_modified, _, _ = dmm.inference(trial_cut[:(start_sim + t + 1)], cont_RTlong[:(start_sim + t + 1)])
-            # z_{t+1} = prop(z_t)
-            z_mean_gen, z_cov_gen = dmm.generation_z(z_modified[-1].unsqueeze(0), cont_RTlong[start_sim + t + 1].unsqueeze(0))
-            z_gen_last = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
-            # x_{t+1} = dec(z_{t+1})
-            y_mean, y_logvar = dmm.generation_x(z_gen_last)
-            y_pred = dmm.reparameterization(y_mean, y_logvar)
+            with torch.inference_mode():
+                z_modified, _, _ = dmm.inference(trial_cut[:(start_sim + t + 1)], cont_RTlong[:(start_sim + t + 1)])
+                # z_{t+1} = prop(z_t)
+                z_mean_gen, z_cov_gen = dmm.generation_z(z_modified[-1].unsqueeze(0), cont_RTlong[start_sim + t + 1].unsqueeze(0))
+                z_gen_last = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
+                # x_{t+1} = dec(z_{t+1})
+                y_mean, y_logvar = dmm.generation_x(z_gen_last)
+                y_pred = dmm.reparameterization(y_mean, y_logvar)
             if mean:
                 y_gen = y_mean
             else:
@@ -1063,17 +1064,18 @@ def plot_cycle_shift_short(comm_dict, diff_dict):
             trial_modified[start_sim + t + 1] = y_gen[0]
             if add_residual:
                 trial_modified[start_sim + t + 1] += residual[start_sim + t + 1]
-            stim_effect[t] = trial_modified[start_sim + t + 1] - trial_true[start_sim + t + 1]
+            stim_effect[t] = (trial_modified[start_sim + t + 1] - trial_true[start_sim + t + 1]).detach().cpu().numpy()
             
             trial_cut_min = trial_modified_min.clone()
             # z_t = enc(x+dx)
-            z_modified, _, _ = dmm.inference(trial_cut_min[:(start_sim + t + 1)], cont_RTlong[:(start_sim + t + 1)])
-            # z_{t+1} = prop(z_t)
-            z_mean_gen, z_cov_gen = dmm.generation_z(z_modified[-1].unsqueeze(0), cont_RTlong[start_sim + t + 1].unsqueeze(0))
-            z_gen_last = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
-            # x_{t+1} = dec(z_{t+1})
-            y_mean, y_logvar = dmm.generation_x(z_gen_last)
-            y_pred = dmm.reparameterization(y_mean, y_logvar)
+            with torch.inference_mode():
+                z_modified, _, _ = dmm.inference(trial_cut_min[:(start_sim + t + 1)], cont_RTlong[:(start_sim + t + 1)])
+                # z_{t+1} = prop(z_t)
+                z_mean_gen, z_cov_gen = dmm.generation_z(z_modified[-1].unsqueeze(0), cont_RTlong[start_sim + t + 1].unsqueeze(0))
+                z_gen_last = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
+                # x_{t+1} = dec(z_{t+1})
+                y_mean, y_logvar = dmm.generation_x(z_gen_last)
+                y_pred = dmm.reparameterization(y_mean, y_logvar)
             if mean:
                 y_gen = y_mean
             else:
@@ -1081,7 +1083,7 @@ def plot_cycle_shift_short(comm_dict, diff_dict):
             trial_modified_min[start_sim + t + 1] = y_gen[0]
             if add_residual:
                 trial_modified_min[start_sim + t + 1] += residual[start_sim + t + 1]
-            stim_effect_min[t] = trial_modified_min[start_sim + t + 1] - trial_true[start_sim + t + 1]
+            stim_effect_min[t] = (trial_modified_min[start_sim + t + 1] - trial_true[start_sim + t + 1]).detach().cpu().numpy()
 
         stim_effect = stim_effect.cpu().detach().numpy()
         stim_effect_min = stim_effect_min.cpu().detach().numpy()
@@ -1170,7 +1172,7 @@ def plot_cycle_shift_long(comm_dict, diff_dict):
         cont_cn = data["cont_cn_ordRT"]
         z_cn, _, _ = infer_latent(dmm, data, device, n_trials)
             
-        steps = len(t)
+        steps, s, _ = z_cn.shape
         samples = len(RT_cn)    # s = samples * n_trials
             
         if mean_trials:
@@ -1230,6 +1232,7 @@ def plot_cycle_shift_long(comm_dict, diff_dict):
         stim_effect = np.zeros([stimulation_steps, set_cn_short.shape[0] * n_trials, 96], dtype=np.float32)
         stim_effect_min = np.zeros([stimulation_steps, set_cn_short.shape[0]*n_trials, 96], dtype=np.float32)
         for t in range(stimulation_steps):
+            print(t)
             # x -> x + dx
             if stimolate:
                 _, dx = compute_dx_for_last_step_ElasticNet(dmm, 
@@ -1296,24 +1299,16 @@ def plot_cycle_shift_long(comm_dict, diff_dict):
             z_generated, _, _ = dmm.inference(trial_true[:teacher], cont_RTshort[:teacher])
             z_modified, _, _ = dmm.inference(trial_modified, cont_RTshort[:teacher])
             
-            z_modified_list = [z_modified]
-            z_generated_list = [z_generated]
-
             alone = steps - teacher
             for cycle_step in range(alone):
-                
+                                    
                 z_mean_gen, z_cov_gen = dmm.generation_z(z_modified[-1].unsqueeze(0), cont_RTshort[teacher+cycle_step].unsqueeze(0))
                 z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
-                z_modified_list.append(z_gen)
-                # z_modified = torch.cat((z_modified, z_gen), dim=0)
-                
+                z_modified = torch.cat((z_modified, z_gen), dim=0)
+                                    
                 z_mean_gen, z_cov_gen = dmm.generation_z(z_generated[-1].unsqueeze(0), cont_RTshort[teacher+cycle_step].unsqueeze(0))
                 z_gen = dmm.reparameterization_cov(z_mean_gen, z_cov_gen)
-                z_generated_list.append(z_gen)
-                # z_generated = torch.cat((z_generated, z_gen), dim=0)
-                
-            z_modified = torch.cat(z_modified_list, dim=0)
-            z_generated = torch.cat(z_generated_list, dim=0)
+                z_generated = torch.cat((z_generated, z_gen), dim=0)
                 
         torch.save({
             'z_modified': z_modified,
@@ -1439,14 +1434,16 @@ def make_RThist(comm_dict, diff_dict, last_stim, z_modified, z_generated, text, 
     stimolate = diff_dict["stimolate"]
     l = diff_dict["l"]
     
-    text = "" if stimolate else "_onech"
+    suffix = "" if stimolate else "_onech"
     # text_mean = "_mean" if mean else ""
         
-    RT_output = RT_detector(z_modified.permute(1, 0, 2))
+    RT_detector.eval()  # make sure dropout/batchnorm are in eval mode
+    with torch.no_grad():
+        RT_output = RT_detector(z_modified.permute(1, 0, 2))
+        RT_gen_out = RT_detector(z_generated.permute(1, 0, 2))
+    
     RT_estimate = prob_to_RT(RT_output, tau)
-
-    RT_gen = RT_detector(z_generated.permute(1, 0, 2))
-    RT_estimate_gen = prob_to_RT(RT_gen, tau)  
+    RT_estimate_gen = prob_to_RT(RT_gen_out, tau)  
     
     RT_gen = (RT_estimate*tau)*5
     RT_gen_true = (RT_estimate_gen*tau)*5
@@ -1493,7 +1490,7 @@ def make_RThist(comm_dict, diff_dict, last_stim, z_modified, z_generated, text, 
     axins.set_yticks([])
     axins.grid(True, which='major', color='w', alpha=0.2)
 
-    fig_file = saved_path / f'{text}_RT_{l}.png'
+    fig_file = saved_path / f'{text}{suffix}_RT_{l}.png'
     plt.savefig(fig_file)
     
 
