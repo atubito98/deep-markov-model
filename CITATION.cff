@@ -1,0 +1,75 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software in your research, please cite the associated
+  publication and the specific software version using the metadata below.
+
+type: software
+
+title: >-
+  Counterfactual Single-Trial Dynamics Reveal How Premotor Manifold
+  Geometry Reconciles Coupled Control with Independent Races
+
+abstract: >-
+  This repository provides the implementation of a causal,
+  context-modulated Deep Markov Model developed to investigate
+  neural population dynamics in the dorsal premotor cortex (PMd)
+  of macaques performing a countermanding task. The model extracts
+  a memoryless three-dimensional latent flow field from neural
+  activity and predicts reaction-time distributions in a zero-shot
+  setting. It enables paired in silico counterfactual simulations
+  with identical noise realizations, allowing the investigation
+  of single-trial coupling between action initiation and cancellation.
+  The associated study shows how a tilted decision boundary on a
+  shared premotor manifold can couple single-trial outcomes while
+  preserving aggregate behavior consistent with the Independent
+  Race Model.
+
+authors:
+  - family-names: "Tubito"
+    given-names: "Alberto"
+    affiliation: "Department of Mathematics, Università degli Studi di Roma La Sapienza; Environment and Health Department, Istituto Superiore di Sanità"
+
+  - family-names: "Ciardiello"
+    given-names: "Andrea"
+    affiliation: "Environment and Health Department, Istituto Superiore di Sanità"
+
+  - family-names: "Capone"
+    given-names: "Cristiano"
+    affiliation: "Environment and Health Department, Istituto Superiore di Sanità"
+
+  - family-names: "Bardella"
+    given-names: "Giampiero"
+    affiliation: "Department of Physiology and Pharmacology, Sapienza University"
+
+  - family-names: "Pani"
+    given-names: "Pierpaolo"
+    affiliation: "Department of Physiology and Pharmacology, Sapienza University"
+
+  - family-names: "Ferraina"
+    given-names: "Stefano"
+    affiliation: "Department of Physiology and Pharmacology, Sapienza University"
+
+  - family-names: "Gigante"
+    given-names: "Guido"
+    affiliation: "Environment and Health Department, Istituto Superiore di Sanità"
+
+version: "1.0.0"
+date-released: "2026-11-24"
+
+license: BSD-3-Clause
+
+repository-code: "https://github.com/atubito98/deep-markov-model"
+
+keywords:
+  - Deep Markov Model
+  - Deep Kalman Filter
+  - Countermanding task
+  - Action stopping
+  - Motor control
+  - Premotor cortex
+  - Neural population dynamics
+  - Latent dynamical systems
+  - Counterfactual simulations
+  - Independent Race Model
+  - Computational neuroscience
+  - Macaque electrophysiology
